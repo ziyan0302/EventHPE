@@ -12,7 +12,7 @@ from event_pose_estimation.dataloader import TrackingDataloader
 from event_pose_estimation.loss_funcs import compute_losses, compute_mpjpe, compute_pa_mpjpe, compute_pelvis_mpjpe
 import collections
 import numpy as np
-import event_pose_estimation.utils as util
+# import event_pose_estimation.utils as util
 
 
 def train(args):
@@ -68,9 +68,9 @@ def train(args):
     )
 
     if args.use_vibe_init or args.use_hmr_init:
-        smpl_dir = '../smpl_model/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl'
+        smpl_dir = '/home/ziyan/02_research/EventHPE/smpl_model/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl'
     else:
-        smpl_dir = '../smpl_model/basicModel_m_lbs_10_207_0_v1.0.0.pkl'
+        smpl_dir = '/home/ziyan/02_research/EventHPE/smpl_model/basicModel_m_lbs_10_207_0_v1.0.0.pkl'
     print('[smpl_dir] %s' % smpl_dir)
 
     # set model
@@ -202,7 +202,7 @@ def train(args):
                 results['mpjpe'] = torch.mean(torch.stack(results['scalar/mpjpe'], dim=0))
                 progress = (100 // display) * iter // (total_iters // display) + 1
                 # print(100 * (epoch + 1) + progress - 1)
-                write_tensorboard(writer, results, epoch+1, progress-1, 'train', args)
+                # write_tensorboard(writer, results, epoch+1, progress-1, 'train', args)
 
                 end_time = time.time()
                 time_used = (end_time - start_time) / 60.
@@ -351,12 +351,12 @@ def get_args():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu_id', type=str, default='0')
-    parser.add_argument('--data_dir', type=str, default='/home/shihao/data_event')
-    parser.add_argument('--result_dir', type=str, default='/home/shihao/exp_track')
+    parser.add_argument('--data_dir', type=str, default='/home/ziyan/02_research/EventHPE/data_event/data_event_out')
+    parser.add_argument('--result_dir', type=str, default='/home/ziyan/02_research/EventHPE/exp_track')
     parser.add_argument('--log_dir', type=str, default='log')
     parser.add_argument('--model_dir', type=str, default=None)
-    parser.add_argument('--smpl_dir', type=str, default='../smpl_model/basicModel_m_lbs_10_207_0_v1.0.0.pkl')
-    parser.add_argument('--num_worker', type=int, default=4)
+    parser.add_argument('--smpl_dir', type=str, default='/home/ziyan/02_research/EventHPE/smpl_model/basicModel_m_lbs_10_207_0_v1.0.0.pkl')
+    parser.add_argument('--num_worker', type=int, default=0)
     parser.add_argument('--pin_memory', type=int, default=1)
     parser.add_argument('--use_amp', type=int, default=1)
 

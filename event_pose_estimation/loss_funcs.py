@@ -57,21 +57,73 @@ def compute_pck_torso(pred, target):
     return pck
 
 
-def compute_losses(out, target, mse_func, device, args):
+def compute_losses_eventcap(out, target, mse_func, device, args):
     losses = {}
-    if args.delta_tran_loss > 0:
+    if args.delta_tran_loss > 0: # args.delta_tran_loss=0
         delta_tran_loss = torch.mean(torch.pow(out['delta_tran'], 2))
-        losses['delta_tran'] = args.delta_tran_loss * delta_tran_loss
+        losses['delta_tran'] = args.delta_tran_loss * delta_tran_loss 
     else:
         losses['delta_tran'] = torch.tensor([0], device=device).float()
 
-    if args.tran_loss > 0:
+    if args.tran_loss > 0: # args.tran_loss=1
         tran_loss = mse_func(out['tran'], target['tran'])
         losses['tran'] = args.tran_loss * tran_loss
     else:
         losses['tran'] = torch.tensor([0], device=device).float()
 
-    if args.theta_loss > 0:
+    if args.theta_loss > 0: # =10
+        B, T, _ = target['theta'].size()
+        target_rotmats = batch_rodrigues(target['theta'].view(-1, 3)).view(B, T, 24, 3, 3)
+
+        if args.use_geodesic_loss:
+            eps = 1e-6
+            # square geodesic loss arccos[(Tr(R1R2^T) -1 )/2]
+            trace_rrt = torch.sum(out['pred_rotmats'] * target_rotmats, dim=(-2, -1))  # [B, T, 24]
+            degree_dif = torch.acos(torch.clamp(0.5 * (trace_rrt - 1), -1 + eps, 1 - eps))
+            theta_loss = torch.mean(degree_dif)
+        else:
+            theta_loss = mse_func(out['pred_rotmats'], target_rotmats)
+        losses['theta'] = args.theta_loss * theta_loss
+    else:
+        losses['theta'] = torch.tensor([0], device=device).float()
+
+    if args.joints3d_loss > 0: # =1
+        joints3d_loss = mse_func(out['joints3d'], target['joints3d'])
+        losses['joints3d'] = args.joints3d_loss * joints3d_loss
+    else:
+        losses['joints3d'] = torch.tensor([0], device=device).float()
+
+    if args.joints2d_loss > 0:
+        pred_joints2d = torch.clamp(out['joints2d'], 0, 1)
+        joints2d_loss = mse_func(pred_joints2d, target['joints2d'])
+        losses['joints2d'] = args.joints2d_loss * joints2d_loss
+    else:
+        losses['joints2d'] = torch.tensor([0], device=device).float()
+
+    if args.flow_loss > 0 and args.flow_loss: # 0.1
+        flow_loss = compute_flow_loss(out['verts'], target['flows'], out['cam_intr'], device)
+        losses['flow'] = args.flow_loss * flow_loss
+        # losses['flow'] = torch.tensor([0], device=device).float()
+    else:
+        losses['flow'] = torch.tensor([0], device=device).float()
+    return losses
+
+
+def compute_losses(out, target, mse_func, device, args):
+    losses = {}
+    if args.delta_tran_loss > 0: # args.delta_tran_loss=0
+        delta_tran_loss = torch.mean(torch.pow(out['delta_tran'], 2))
+        losses['delta_tran'] = args.delta_tran_loss * delta_tran_loss 
+    else:
+        losses['delta_tran'] = torch.tensor([0], device=device).float()
+
+    if args.tran_loss > 0: # args.tran_loss=1
+        tran_loss = mse_func(out['tran'], target['tran'])
+        losses['tran'] = args.tran_loss * tran_loss
+    else:
+        losses['tran'] = torch.tensor([0], device=device).float()
+
+    if args.theta_loss > 0: # =10
         B, T, _ = target['theta'].size()
         target_rotmats = batch_rodrigues(target['theta'].view(-1, 3)).view(B, T, 24, 3, 3)
 
@@ -95,7 +147,7 @@ def compute_losses(out, target, mse_func, device, args):
     else:
         losses['theta'] = torch.tensor([0], device=device).float()
 
-    if args.joints3d_loss > 0:
+    if args.joints3d_loss > 0: # =1
         joints3d_loss = mse_func(out['joints3d'], target['joints3d'])
         losses['joints3d'] = args.joints3d_loss * joints3d_loss
     else:
@@ -109,7 +161,7 @@ def compute_losses(out, target, mse_func, device, args):
     else:
         losses['joints2d'] = torch.tensor([0], device=device).float()
 
-    if args.flow_loss > 0 and args.flow_loss:
+    if args.flow_loss > 0 and args.flow_loss: # 0.1
         flow_loss = compute_flow_loss(out['verts'], target['flows'], out['cam_intr'], device)
         losses['flow'] = args.flow_loss * flow_loss
         # losses['flow'] = torch.tensor([0], device=device).float()

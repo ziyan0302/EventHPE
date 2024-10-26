@@ -93,8 +93,8 @@ def get_args():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu_id', type=str, default='0')
-    parser.add_argument('--data_dir', type=str, default='/home/shihao/data_event')
-    parser.add_argument('--result_dir', type=str, default='/home/shihao/data_event')
+    parser.add_argument('--data_dir', type=str, default='/home/ziyan/02_research/EventHPE/data_event')
+    parser.add_argument('--result_dir', type=str, default='/home/ziyan/02_research/EventHPE/data_event')
 
     parser.add_argument('--input_channel', type=int, default=8)
     parser.add_argument('--img_size', type=int, default=256)

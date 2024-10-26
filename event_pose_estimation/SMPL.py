@@ -14,6 +14,8 @@ import torch.nn as nn
 from plyfile import PlyData, PlyElement
 import cv2
 import torch.nn.functional as F
+import pdb
+import joblib
 
 
 """SMPL pytorch implementation"""
@@ -94,26 +96,27 @@ class SMPL(nn.Module):
         model = pickle.load(open(model_path, 'rb'), encoding='iso-8859-1')
         self.faces = model['f']
 
-        np_v_template = np.array(model['v_template'], dtype=np.float)
+        np_v_template = np.array(model['v_template'], dtype=np.float64)
         self.register_buffer('v_template', torch.from_numpy(np_v_template).float())
         self.size = [np_v_template.shape[0], 3]
 
-        np_shapedirs = np.array(model['shapedirs'], dtype=np.float)
+        np_shapedirs = np.array(model['shapedirs'], dtype=np.float64)
         self.num_betas = np_shapedirs.shape[-1]
         np_shapedirs = np.reshape(np_shapedirs, [-1, self.num_betas]).T
         self.register_buffer('shapedirs', torch.from_numpy(np_shapedirs).float())  # [10, 20670]
 
-        np_J_regressor = np.array(model['J_regressor'].todense().T, dtype=np.float)
+        np_J_regressor = np.array(model['J_regressor'].todense().T, dtype=np.float64)
         self.register_buffer('J_regressor', torch.from_numpy(np_J_regressor).float())  # [6890, 24]
 
-        np_posedirs = np.array(model['posedirs'], dtype=np.float)
+        np_posedirs = np.array(model['posedirs'], dtype=np.float64)
         num_pose_basis = np_posedirs.shape[-1]
         np_posedirs = np.reshape(np_posedirs, [-1, num_pose_basis]).T
         self.register_buffer('posedirs', torch.from_numpy(np_posedirs).float())  # [207, 20670]
 
-        self.parents = np.array(model['kintree_table'])[0].astype(np.int32)
+        self.parents = np.array(model['kintree_table'])[0].astype(np.int32) # the relationship between the joints 
+                                                                            # for forward kinetics
 
-        np_weights = np.array(model['weights'], dtype=np.float)  # [6890, 24]
+        np_weights = np.array(model['weights'], dtype=np.float64)  # [6890, 24]
         vertex_count = np_weights.shape[0]
         vertex_component = np_weights.shape[1]
 
@@ -153,9 +156,32 @@ class SMPL(nn.Module):
             self.cur_device = torch.device(device.type, device.index)
 
         num_batch = beta.size(0)
+        
+        if (0):
+            beta.shape
+            self.shapedirs.shape
+            self.size[0], self.size[1]
+            self.v_template.shape
+            self.J_regressor.shape
 
         # [N, 6890, 3]
         v_shaped = torch.matmul(beta, self.shapedirs).view(-1, self.size[0], self.size[1]) + self.v_template
+
+        if (0):
+            _joint2d, _joint3d, _params, _tran, _hmr_feat = \
+                joblib.load('/home/ziyan/02_research/EventHPE/data_event/'+
+                            'data_event_out/hmr_results/subject01_group1_time1/'+
+                            'fullpic0000_hmr.pkl')
+            # _joint2d: (24,2), _joint3d: (24,3), _params: (85,), _tran: (1,3), _hmr_feat: (2048,)
+            # theta: _params[3:75], beta: _params[75:]
+            theta = np.expand_dims(_params[3:75], axis=0)
+            beta = np.expand_dims(_params[75:], axis=0)
+            tran = _tran
+            init_shape = np.concatenate([tran, theta, beta], axis=1)
+            _joint3d.shape
+            _tran.shape
+            _hmr_feat.shape
+            _params.shape
         Jx = torch.matmul(v_shaped[:, :, 0], self.J_regressor)
         Jy = torch.matmul(v_shaped[:, :, 1], self.J_regressor)
         Jz = torch.matmul(v_shaped[:, :, 2], self.J_regressor)
@@ -164,9 +190,9 @@ class SMPL(nn.Module):
         if rotmats is not None:
             Rs = rotmats
         else:
-            Rs = batch_rodrigues(theta.view(-1, 3)).view(-1, 24, 3, 3)
+            Rs = batch_rodrigues(theta.view(-1, 3)).view(-1, 24, 3, 3) # the first row is root
         pose_feature = torch.sub(Rs[:, 1:, :, :], self.e3, alpha=1.0).view(-1, 207)
-        v_posed = torch.matmul(pose_feature, self.posedirs).view(-1, self.size[0], self.size[1]) + v_shaped
+        v_posed = torch.matmul(pose_feature, self.posedirs).view(-1, self.size[0], self.size[1]) + v_shaped # [N, 6890, 3]
         self.J_transformed, A = batch_global_rigid_transformation(Rs, J, self.parents, self.cur_device)
 
         weight = self.weight[:num_batch]  # [N, 6890, 24]
@@ -175,11 +201,11 @@ class SMPL(nn.Module):
 
         v_posed_homo = torch.cat(
             [v_posed, torch.ones(num_batch, v_posed.shape[1], 1, device=self.cur_device)], dim=2)
-        v_homo = torch.matmul(T, torch.unsqueeze(v_posed_homo, -1))
+        v_homo = torch.matmul(T, torch.unsqueeze(v_posed_homo, -1)) # [N, 6890, 4, 1]
 
-        verts = v_homo[:, :, :3, 0]
+        verts = v_homo[:, :, :3, 0] # [N, 6890, 3, 1]
 
-        joints = self.J_transformed
+        joints = self.J_transformed # [N, 24, 3]
 
         if get_skin:
             return verts, joints, Rs

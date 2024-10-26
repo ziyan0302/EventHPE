@@ -15,12 +15,14 @@ from event_pose_estimation.loss_funcs import compute_mpjpe, compute_pa_mpjpe, co
     compute_pck, compute_pck_head, compute_pck_torso
 import collections
 import numpy as np
+import pdb
+from event_pose_estimation.geometry import projection_torch
 
 
 class TrackingTestDataloader(Dataset):
     def __init__(
             self,
-            data_dir='/home/shihao/data_event',
+            data_dir='/home/ziyan/02_research/EventHPE/data_event',
             train_steps=8,
             test_steps=8,
             skip=2,
@@ -66,18 +68,19 @@ class TrackingTestDataloader(Dataset):
         return len(self.all_clips)
 
     def __getitem__(self, idx):
+        print("====== get_item idx: ", idx, " ========")
         action, frame_idx = self.all_clips[idx]
         # action, frame_idx = 'subject02_group2_time1', 710
 
         # test
         next_frames_idx = self.skip * np.arange(1, self.test_steps+1)
         sample_frames_idx = np.append(frame_idx, frame_idx + next_frames_idx)
-        # print(sample_frames_idx)
-
+        print(sample_frames_idx)
         # beta, theta, tran, _, _ = joblib.load('%s/pose_events/%s/pose%04i.pkl' % (self.data_dir, action, frame_idx))
         # init_shape = np.concatenate([tran, theta, beta], axis=1)
 
-        hmr_feats, init_shapes = [], []
+        # init
+        hmr_feats, init_shapes = [], [] 
         for i in range(0, self.test_steps, self.train_steps):
             if self.use_vibe_init:
                 fname = '%s/vibe_results_%02i%02i/%s/fullpic%04i_vibe%02i.pkl' % \
@@ -168,6 +171,13 @@ class TrackingTestDataloader(Dataset):
         one_sample['tran'] = torch.from_numpy(tran_list).float()  # [T, 1, 3]
         one_sample['joints2d'] = torch.from_numpy(joints2d_list).float()  # [T, 24, 2]
         one_sample['joints3d'] = torch.from_numpy(joints3d_list).float()  # [T, 24, 3]
+        if (0):
+            scale = 256 / 1280.
+            cam_intr = np.array([1679.3, 1679.3, 641, 641]) * scale
+            tmp = projection_torch(one_sample['joints3d'], cam_intr, 256, 256)  # [B, T, 24, 2]
+            tmp[0]
+            one_sample['joints2d'][0]*256
+            beta, theta, tran, joints3d, joints2d = joblib.load('/home/ziyan/02_research/EventHPE/data_event/data_event_out/pose_events/subject01_group1_time1/pose0000.pkl')
         one_sample['info'] = [action, sample_frames_idx]
         return one_sample
 
@@ -177,6 +187,7 @@ class TrackingTestDataloader(Dataset):
         action_names = []
         for action in tmp:
             subject = action.split('_')[0]
+
             if self.mode == 'test':
                 if subject in ['subject01', 'subject02', 'subject07']:
                     action_names.append(action)
@@ -230,7 +241,7 @@ def test_simple_instance(args):
     test_generator = DataLoader(
         dataset_test,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=False,
         num_workers=args.num_worker,
         pin_memory=False
     )
@@ -311,6 +322,12 @@ def test_simple_instance(args):
             verts = torch.cat(verts, dim=1)
             joints3d = torch.cat(joints3d, dim=1)
             joints2d = torch.cat(joints2d, dim=1)
+            if (0):
+                verts.shape
+                verts[:,:,:,2].max()
+                verts[:,:,:,2].min()
+                verts.max()
+                verts.min()
             # print(trans.size(), verts.size(), joints3d.size(), joints2d.size())
 
             mpjpe = compute_mpjpe(joints3d, data['joints3d'])  # [B, T, 24]
@@ -324,7 +341,190 @@ def test_simple_instance(args):
             # print(s.size(), R.size(), t.size())
             pa_verts = s.unsqueeze(-1).unsqueeze(-1) * R.bmm(verts[:, 1:].reshape(B * T, 6890, 3).permute(0, 2, 1)) + t
             pa_verts = pa_verts.permute(0, 2, 1).view(B, T, 6890, 3)
-            pa_verts = torch.cat([verts[:, 0:1], pa_verts], dim=1)
+            pa_verts = torch.cat([verts[:, 0:1], pa_verts], dim=1) # add initial shape 
+            
+            if (1): # load events
+                from icp_test import find_closest_events
+                import h5py
+                with h5py.File('/home/ziyan/02_research/EventHPE/events.hdf5', 'r') as f:
+                    # ['p', 't', 'x', 'y', 'image_raw_event_ts']
+                    events_t = np.array(f['t'])
+                    events_xy = np.concatenate([np.array(f['x'])[:,np.newaxis],np.array(f['y'])[:,np.newaxis]], axis=1)
+                    image_raw_ts = np.array(f['image_raw_event_ts'])
+
+            if (1): # find boundary by image dilating
+                tmp = projection_torch(pa_verts, model.cam_intr, 256, 256)*256  # [B, T, 24, 2]
+                mask = np.zeros((256, 256), dtype=np.uint8)
+                tmp1 = tmp.to(torch.int)
+                mask[tmp1[0,0,:,1], tmp1[0,0,:,0]] = 255
+                # Dilate the mask to create circles
+                kernel7x7 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+                mask7x7 = cv2.dilate(mask, kernel7x7)
+                kernel5x5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                mask5x5 = cv2.dilate(mask, kernel5x5)
+                image7x7 = np.full((256, 256), 0, dtype=np.uint8)  # Grey background
+                image5x5 = np.full((256, 256), 0, dtype=np.uint8)  # Grey background
+                # Apply the mask to the image
+                # image7x7[mask7x7 == 255] += np.array([0, 127, 127]).astype(np.uint8)  # White dots
+                # image5x5[mask5x5 == 255] += np.array([127, 127, 127]).astype(np.uint8)  # White dots
+                image7x7[mask7x7 == 255] += np.array([255]).astype(np.uint8)
+                image5x5[mask5x5 == 255] += np.array([255]).astype(np.uint8)
+                edge = image7x7 - image5x5
+
+                if (0):
+                    ori_img = cv2.imread("/home/ziyan/02_research/EventHPE/data_event/data_event_out/full_pic_256/subject01_group1_time1/fullpic0000.jpg")
+                    ori_img.shape
+                    ori_img[edge>200] = np.array([255,255,255])
+                    
+                    # Save or display the image
+                    cv2.imwrite('edge.png', edge)
+                    cv2.imwrite('oriandedge.png', ori_img)
+
+            if (1): # find cloest event 
+                from icp_test import find_closest_events
+                locations = np.argwhere(edge > 200)
+                locations.shape
+                image_raw_ts
+                events_xy 
+                image_raw_ts[0].shape
+                image_raw_ts[0]
+                events_t[:50]
+                # find_closest_events(locations, events_xy, events_t, np.array([image_raw_ts[0]]), np.array([image_raw_ts[0]]), np.array([image_raw_ts[1]]), 0.1)
+                closest_events_u, closest_events_t = find_closest_events(locations, events_xy, events_t, image_raw_ts[0]+30, image_raw_ts[0], image_raw_ts[1], 0.5)
+                event_img = np.zeros((256, 256), dtype=np.uint8)
+                event_img[closest_events_u[:,0], closest_events_u[:,1]] = 255
+                edge[closest_events_u[:,0], closest_events_u[:,1]] = 128
+                cv2.imwrite('event_img.png', edge)                    
+                closest_events_u.shape
+                pdb.set_trace()
+
+                
+
+
+                if (0):
+                    ## find the boundary
+                    # find the 3d position of boundary and find boundary via mesh projection 
+                    from icp_test import find_3d_position_of_2d_boundary_pixel, extract_boundary_pixels
+                    boundary_pixels = extract_boundary_pixels(edge//255)
+                    boundary_pixels = np.array(boundary_pixels)
+                    boundary_pixels.shape
+                    _3dofBoundary = []
+
+                    cv2.circle(edge, (boundary_pixels[0,0], boundary_pixels[0,1]), radius=3, color=(255), thickness=-1)
+                    cv2.imwrite('edge.png', edge)
+
+                    boundary_pixels_trans = boundary_pixels[:, [1, 0]]
+                    find_3d_position_of_2d_boundary_pixel(boundary_pixels_trans[0], tmp[0,0,:].numpy(), pa_verts[0,0,:].numpy(), results['faces'])
+
+                    # check the boundary is in the range of vertices
+                    mask = np.zeros((256, 256), dtype=np.uint8)
+                    tmp1 = tmp.to(torch.int)
+                    mask[tmp1[0,0,:,1], tmp1[0,0,:,0]] = 255
+                    image_vertices = np.full((256, 256), 0, dtype=np.uint8)  # Grey background
+                    image_vertices[mask == 255] += np.array([127]).astype(np.uint8)
+                    
+                    cv2.circle(image_vertices, (boundary_pixels[0,0], boundary_pixels[0,1]), radius=3, color=(255), thickness=-1)
+                    
+                    cv2.imwrite('image_vertices.png', image_vertices)
+
+                    scale_factor = 4  # Increase the resolution by 4x
+                    high_res_size = 256 * scale_factor
+
+                    # Create an empty mask at higher resolution
+                    high_res_mask = np.zeros((high_res_size, high_res_size), dtype=np.uint8)
+
+                    # Scale up the 2D vertices for the higher resolution mask
+                    vertices_2d_high_res = tmp.numpy()[0,0] * scale_factor
+                    
+                    
+                    # Vectorize the face rendering using OpenCV
+                    # Extract vertices for each face using indexing
+                    triangles = vertices_2d_high_res[results['faces']]  # Shape: (num_faces, 3, 2)
+                    triangles.shape
+
+                    # Convert the vertex coordinates to integers (OpenCV expects integer pixel values)
+                    triangles = np.round(triangles).astype(np.int32)
+                    triangles = triangles.reshape((-1,1,2))
+
+                    # Fill polygons (triangles) on the mask image
+                    mask = np.zeros((256, 256), dtype=np.uint8)
+                    
+                    cv2.fillPoly(high_res_mask, [triangles], 255)  # Fill with white (255)
+                    mask = cv2.resize(high_res_mask, (256, 256), interpolation=cv2.INTER_NEAREST)
+                    mask[mask>0] = [255]
+                    cv2.imwrite('image_mesh.png', mask)
+
+
+                pa_verts.shape
+                pa_verts[:,:,:,2].max()
+                pa_verts[:,:,:,2].min()
+            
+            if (0):
+                angle_yaw = np.radians(0)  # 45 degrees rotation around Y-axis
+                rotation_y = np.array([
+                    [np.cos(angle_yaw), 0, np.sin(angle_yaw), 0],
+                    [0, 1, 0, 0],
+                    [-np.sin(angle_yaw), 0, np.cos(angle_yaw), 0],
+                    [0, 0, 0, 1]
+                ])
+
+            if (0): # find boundary by pyrender
+                # Intrinsics (fx, fy, cx, cy)
+                fx, fy, cx, cy = model.cam_intr.numpy()  # Assuming you have this from your model
+                import trimesh
+                import pyrender
+                os.environ["PYOPENGL_PLATFORM"] = "egl"
+                # Create a Trimesh object using the vertices and faces
+                # tmp_verts = pa_verts[0,0] + data['tran'][0,0]
+                tmp_verts = pa_verts[0,0] 
+                mesh = trimesh.Trimesh(vertices=tmp_verts, faces=results['faces'])
+
+                # top view
+                # rot = trimesh.transformations.rotation_matrix(np.radians(90), [1, 0, 0])
+                # mesh.apply_transform(rot)
+
+                # Create a Pyrender scene
+                scene = pyrender.Scene()
+
+                # Convert the Trimesh mesh to a Pyrender mesh
+                material = pyrender.MetallicRoughnessMaterial(metallicFactor=0.0,alphaMode='OPAQUE',baseColorFactor=(1.0, 1.0, 0.9, 1.0))
+                pyrender_mesh = pyrender.Mesh.from_trimesh(mesh, material=material)
+                # pyrender_mesh = pyrender.Mesh.from_trimesh(mesh)
+                # Add the mesh to the scene
+                scene.add(pyrender_mesh)
+
+                # Set up a perspective camera
+                camera = pyrender.IntrinsicsCamera(fx, fy, cx, cy, zfar=1e12)
+                # camera = pyrender.IntrinsicsCamera(5., 5., cx, cy, zfar=1e12)
+                camera_pose = np.eye(4)  # Identity matrix (camera at origin)
+
+                
+
+                # Apply the rotation to the camera pose
+                camera_pose = np.dot(camera_pose, rotation_y)
+                # camera_pose = np.dot(rotation_y, camera_pose)
+                camera_pose[2, 3] = 0.0  # Place the camera 2 units away along the Z-axis
+
+                scene.add(camera, pose=camera_pose)
+
+
+                # Add a light source
+                light = pyrender.DirectionalLight(color=np.ones(3), intensity=5.0)
+                scene.add(light, pose=camera_pose)
+
+                #online_viewer = pyrender.Viewer(scene)
+                # Create an offscreen renderer
+                renderer = pyrender.OffscreenRenderer(viewport_width=256, viewport_height=256)
+
+                # Render the color image and depth map
+                color_image, depth_image = renderer.render(scene)
+                cv2.imwrite('color_img.jpg', color_image)
+                cv2.imwrite('depth_img.jpg', depth_image)
+                pdb.set_trace()
+
+                # Generate the silhouette mask (binary mask)
+                # The depth image contains positive values where the mesh is present
+                mask = (depth_image > 0).astype(np.uint8)
 
             # collect results
             results['scalar/mpjpe'].append(mpjpe.detach())
@@ -351,8 +551,8 @@ def test_simple_instance(args):
                         (save_dir, action, frame_idx, args.test_steps, args.train_steps, args.skip)
                 joblib.dump([_verts, _pa_verts, _tran, _joints3d, _joints2d, _mpjpe, _pa_mpjpe, _pck], fname, compress=3)
 
-            if iter > 1:
-                break
+            # if iter > 1:
+            #     break
 
         results['mpjpe'] = torch.mean(torch.cat(results['scalar/mpjpe'], dim=0), dim=(0, 2))
         results['pa_mpjpe'] = torch.mean(torch.cat(results['scalar/pa_mpjpe'], dim=0), dim=(0, 2))
@@ -563,9 +763,9 @@ def get_args():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--gpu_id', type=str, default='0')
-    parser.add_argument('--data_dir', type=str, default='/home/shihao/data_event_out')
-    parser.add_argument('--save_dir', type=str, default='/home/shihao/data_event_out/ours_vibe_init')
-    parser.add_argument('--model_dir', type=str, default='/home/shihao/data_event_out/model/ours_gt.pkl')
+    parser.add_argument('--data_dir', type=str, default='/home/ziyan/02_research/EventHPE/data_event/data_event_out')
+    parser.add_argument('--save_dir', type=str, default='/home/ziyan/02_research/EventHPE/data_event/data_event_out/ours_vibe_init')
+    parser.add_argument('--model_dir', type=str, default='/home/ziyan/02_research/EventHPE/data_event/data_event_out/model/ours_gt.pkl')
 
     parser.add_argument('--events_input_channel', type=int, default=8)
     parser.add_argument('--rnn_layers', type=int, default=1)
@@ -584,10 +784,10 @@ def get_args():
 
     parser.add_argument('--use_vibe_init', type=int, default=1)
     parser.add_argument('--use_hmr_init', type=int, default=0)
-    parser.add_argument('--smpl_dir', type=str, default='../smpl_model/basicModel_m_lbs_10_207_0_v1.0.0.pkl')
+    parser.add_argument('--smpl_dir', type=str, default='/home/ziyan/02_research/EventHPE/smpl_model/basicModel_m_lbs_10_207_0_v1.0.0.pkl')
 
-    parser.add_argument('--batch_size', type=int, default=8)
-    parser.add_argument('--num_worker', type=int, default=4)
+    parser.add_argument('--batch_size', type=int, default=1)
+    parser.add_argument('--num_worker', type=int, default=0)
     args = parser.parse_args()
     print_args(args)
     return args

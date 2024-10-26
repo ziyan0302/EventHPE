@@ -11,7 +11,7 @@ from albumentations import ShiftScaleRotate, Compose
 
 
 class FlowDataloader(Dataset):
-    def __init__(self, data_dir='/home/shihao/data_event', input_channel=8, img_size=256, num_skip=4, skip=2,
+    def __init__(self, data_dir='/home/ziyan/02_research/EventHPE/data_event', input_channel=8, img_size=256, num_skip=4, skip=2,
                  max_num_events=60000, transform=None, mode='train', viz=False, source='events'):
         self.data_dir = data_dir
         self.transform = transform
