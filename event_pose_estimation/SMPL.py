@@ -115,7 +115,6 @@ class SMPL(nn.Module):
 
         self.parents = np.array(model['kintree_table'])[0].astype(np.int32) # the relationship between the joints 
                                                                             # for forward kinetics
-
         np_weights = np.array(model['weights'], dtype=np.float64)  # [6890, 24]
         vertex_count = np_weights.shape[0]
         vertex_component = np_weights.shape[1]

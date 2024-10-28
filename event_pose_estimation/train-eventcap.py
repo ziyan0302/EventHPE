@@ -19,11 +19,13 @@ import pickle
 # from scipy.spatial import KDTree
 from eventcap_util import findCloestPoint, findClosestPointTorch, \
     find_closest_events, findBoundaryPixels, joints2dOnImage, \
-    joints2dandFeatOnImage
+    joints2dandFeatOnImage, draw_feature_dots, draw_skeleton
 from event_pose_estimation.geometry import projection_torch, rot6d_to_rotmat, delta_rotmat_to_rotmat
 import h5py
+import random
 
 # import event_pose_estimation.utils as util
+
 
 
 def train(args):
@@ -274,14 +276,26 @@ def train(args):
                     p0tensor = torch.tensor(p0.squeeze(1), requires_grad=False).to(device)  # (n, 2)
                     min_distances, closest_vert_indices = findClosestPointTorch(verts2d[iImg]*H, p0tensor)
                     selectedDistancesSqSum = torch.sum(min_distances[min_distances < tolerance]**2)
-                    loss_cor = loss_cor + selectedDistancesSqSum.item()
+                    loss_cor = loss_cor + selectedDistancesSqSum
 
                 # print('===== Etemp =====')
                 loss_temp = torch.norm((joints2d[1:] - joints2d[:-1]), dim=2).sum()
 
 
-                # lossFor1Seq = loss_cor + 0.1 * loss_temp
-                lossFor1Seq = loss_cor
+                lossFor1Seq = loss_cor + 10*loss_temp
+                # lossFor1Seq = loss_cor
+                colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(len(p0))}
+                min_distances = min_distances.cpu().detach().numpy()
+                featAndVertOnImg = draw_feature_dots(frame_gray, p0.squeeze(1)[min_distances < tolerance], \
+                                                     (verts2d[-1]*H).type(torch.uint8).detach().cpu().numpy(), \
+                                                        closest_vert_indices[min_distances < tolerance], colors)
+                jointsForVisual = joints2d[-1].detach().cpu().numpy() * 256
+                jointsForVisual = jointsForVisual.astype(np.uint8)
+                
+                skeletonOnImg = draw_skeleton(frame_gray, jointsForVisual, draw_edges=True)
+
+                writer.add_images('feat and closest vertics' , featAndVertOnImg, iEpoch*sequence_length + startImg, dataformats='HWC')
+                writer.add_images('skeleton' , skeletonOnImg, iEpoch*sequence_length + startImg, dataformats='HWC')
                 writer.add_scalar('training_loss', lossFor1Seq.item(), iEpoch*sequence_length + startImg)
 
                 total_loss.append(lossFor1Seq.item())
@@ -290,7 +304,6 @@ def train(args):
                 optimizer.step()
                 optimizer.zero_grad()
 
-            print(learnable_pose_and_shape[0,:10])
             averLossForEpoch = sum(total_loss) / len(total_loss)
             print(iEpoch, f" aver loss for Etemp & Ecor: {averLossForEpoch:.3f}")
             
@@ -303,10 +316,10 @@ def train(args):
             joints2dSeq = projection_torch(joints3d_transSeq, cam_intr, H, W)
 
         # joints2dOnImage(joints2dSeq, learnable_pose_and_shape.shape[0], args, action, saved_folder = "/home/ziyan/02_research/EventHPE/event_pose_estimation/tmp_folder")
-        joints2dandFeatOnImage(joints2dSeq, featImgLocs, learnable_pose_and_shape.shape[0], args, action, saved_folder = "/home/ziyan/02_research/EventHPE/event_pose_estimation/tmp_folder")
+        # joints2dandFeatOnImage(joints2dSeq, featImgLocs, learnable_pose_and_shape.shape[0], args, action, saved_folder = "/home/ziyan/02_research/EventHPE/event_pose_estimation/tmp_folder")
             
         print('------------------------------------- 3.3. Event-Based Pose Refinement ------------------------------------')
-        for iEpoch in range(2):
+        for iEpoch in range(20):
             total_loss = []
 
             for iSplit in range(totalSplits):
@@ -328,8 +341,8 @@ def train(args):
                 # verts2d_pix = (verts2d*H).type(torch.uint8).detach().cpu().numpy()
                 verts2d_pix = (verts2d*H).detach().cpu().numpy() 
 
-                boundaryPixelsinSeq = findBoundaryPixels(verts2d_pix, 256)
-                closest_events_u, closest_events_t = find_closest_events(boundaryPixelsinSeq[1], events_xy, events_ts, image_raw_event_ts[1], image_raw_event_ts[0], image_raw_event_ts[7], 0.5)
+                boundaryPixelsinSeq = findBoundaryPixels(verts2d_pix, 256) # len = 8
+                # closest_events_u, closest_events_t = find_closest_events(boundaryPixelsinSeq[1], events_xy, events_ts, image_raw_event_ts[1], image_raw_event_ts[0], image_raw_event_ts[7], 0.5)
                 for iImg in range(numImgsInSplit):
                     closest_events_u, closest_events_t = find_closest_events(boundaryPixelsinSeq[iImg], events_xy, events_ts, image_raw_event_ts[startImg+iImg], image_raw_event_ts[startImg], image_raw_event_ts[startImg+numImgsInSplit], 0.5)
                     distanceToClosestEvents = torch.norm(torch.tensor((boundaryPixelsinSeq[iImg] - closest_events_u)/H).to(torch.float16), dim = 1).to(device)
@@ -345,6 +358,24 @@ def train(args):
                 optimizer.step()
                 optimizer.zero_grad()
                 total_loss.append(loss_refined.item())
+
+                if os.path.exists('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit-1)):
+                    frame_gray = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
+                colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(closest_events_u.shape[0])}
+                # boundaryAndEventOnImg = draw_feature_dots(frame_gray, np.transpose(boundaryPixelsinSeq[-1], (1, 0)), \
+                #                                      closest_events_u, \
+                #                                         [x for x in range(closest_events_u.shape[0])], colors)
+                boundaryAndEventOnImg = draw_feature_dots(frame_gray, boundaryPixelsinSeq[-1][:,[1,0]], closest_events_u, [x for x in range(closest_events_u.shape[0])], colors)
+                # boundaryAndEventOnImg = draw_feature_dots(frame_gray, boundaryPixelsinSeq[-1], closest_events_u, [x for x in range(closest_events_u.shape[0])], colors)
+                
+                closest_events_u[:,1].min()
+                boundaryPixelsinSeq[-1].shape
+                boundaryPixelsinSeq[-1][0]
+                closest_events_u[0]
+                # cv2.imwrite('tmp.jpg', boundaryAndEventOnImg)
+                writer.add_images('boundary_on_Img' , boundaryAndEventOnImg, iEpoch*sequence_length + startImg, dataformats='HWC')
+                writer.add_scalar('refinement_loss', loss_refined.item(), iEpoch*sequence_length + startImg)
+
             averLossForEpoch = sum(total_loss) / len(total_loss)
             print(iEpoch, " aver loss for Etemp & Ecor: ", averLossForEpoch)
 

@@ -54,11 +54,10 @@ def find_closest_events(boundary_pixels, event_u, event_t, t_f, t_0, t_N, lambda
     filtered_events_u = event_u[valid_indices]
     filtered_event_ts = event_t[valid_indices]
     # duplicate
+    boundary_pixels = boundary_pixels[:,[1,0]]
     # Expand the dimensions of boundary_pixels and events_xy for broadcasting
-    boundary_pixels_expanded = boundary_pixels[:, np.newaxis, :]  # Shape (m, 1, 2)
-    events_xy_expanded = filtered_events_u[np.newaxis, :, :]  # Shape (1, n, 2)
-    events_xy_expanded[0,0]
-    boundary_pixels_expanded[0,0]
+    boundary_pixels_expanded = boundary_pixels[:, np.newaxis, :].astype(np.int64)  # Shape (m, 1, 2)
+    events_xy_expanded = filtered_events_u[np.newaxis, :, :].astype(np.int64)  # Shape (1, n, 2)
 
     # Now subtract the two arrays (broadcasted subtraction)
     spatial_distances = np.sum((boundary_pixels_expanded - events_xy_expanded)**2, axis=-1)  # Shape: (n_boundary_pixels, n_events)
@@ -67,14 +66,16 @@ def find_closest_events(boundary_pixels, event_u, event_t, t_f, t_0, t_N, lambda
     temporal_distances = (t_f - filtered_event_ts) / (t_N - t_0)  # Shape: (1, n_events)
     
     # Compute total distance D(s_b, e) = λ * (temporal_dist)^2 + spatial_dist
-    total_distances = lambda_val * (temporal_distances**2) + spatial_distances  # Shape: (n_boundary_pixels, n_events)
+    # total_distances = lambda_val * (temporal_distances**2) + spatial_distances  # Shape: (n_boundary_pixels, n_events)
+    total_distances = spatial_distances  # Shape: (n_boundary_pixels, n_events)
     
     # Find the event index that minimizes the distance for each boundary pixel
     closest_event_indices = np.argmin(total_distances, axis=1)
     
     # Get the closest events by indexing into event arrays
-    closest_events_u = event_u[closest_event_indices]
-    closest_events_t = event_t[closest_event_indices]
+    closest_events_u = filtered_events_u[closest_event_indices]
+    closest_events_t = filtered_event_ts[closest_event_indices]
+
     return closest_events_u, closest_events_t
 
 def findBoundaryPixels(vertPixels, H=256):
@@ -254,3 +255,224 @@ def joints2dandFeatOnImage(joints2d, feats, lenOfSeq, args, action, saved_folder
         cv2.putText(imageCurr, text, position, font, font_scale, color, thickness)
 
         cv2.imwrite(os.path.join(str(saved_folder),f'eventsOnImg{iTest:04}.jpg'), imageCurr)
+
+
+def draw_skeleton(input_image, joints, draw_edges=True, vis=None, radius=None):
+    """
+    joints is 3 x 19. but if not will transpose it.
+    0: Right ankle
+    1: Right knee
+    2: Right hip
+    3: Left hip
+    4: Left knee
+    5: Left ankle
+    6: Right wrist
+    7: Right elbow
+    8: Right shoulder
+    9: Left shoulder
+    10: Left elbow
+    11: Left wrist
+    12: Neck
+    13: Head top
+    14: nose
+    15: left_eye
+    16: right_eye
+    17: left_ear
+    18: right_ear
+    """
+
+    """
+    joints is 3 x 19. but if not will transpose it.
+    11: Right feet
+    8: Right ankle
+    5: Right knee
+    2: Right hip
+    3: Left hip
+    4: Left knee
+    7: Left ankle
+    10: Left feet
+    21: Right wrist
+    23: Right hand
+    7: Right elbow
+    17: Right shoulder
+    16: Left shoulder
+    10: Left elbow
+    20: Left wrist
+    22: Left wrist
+    12: Neck
+    13: Head top
+    14: nose
+    15: left_eye
+    16: right_eye
+    17: left_ear
+    18: right_ear
+
+    """
+    import numpy as np
+    import cv2
+
+    if radius is None:
+        radius = max(4, (np.mean(input_image.shape[:2]) * 0.01).astype(int))
+
+    colors = {
+        'pink': [197, 27, 125],  # L lower leg
+        'light_pink': [233, 163, 201],  # L upper leg
+        'light_green': [161, 215, 106],  # L lower arm
+        'green': [77, 146, 33],  # L upper arm
+        'red': [215, 48, 39],  # head
+        'light_red': [252, 146, 114],  # head
+        'light_orange': [252, 141, 89],  # chest
+        'purple': [118, 42, 131],  # R lower leg
+        'light_purple': [175, 141, 195],  # R upper
+        'light_blue': [145, 191, 219],  # R lower arm
+        'blue': [69, 117, 180],  # R upper arm
+        'gray': [130, 130, 130],  #
+        'white': [255, 255, 255],  #        
+    }
+
+    # image = input_image.copy()
+    image = cv2.cvtColor(input_image, cv2.COLOR_GRAY2BGR)
+
+    input_is_float = False
+
+    if np.issubdtype(image.dtype, np.float):
+        input_is_float = True
+        max_val = image.max()
+        if max_val <= 2.:  # should be 1 but sometimes it's slightly above 1
+            image = (image * 255).astype(np.uint8)
+        else:
+            image = (image).astype(np.uint8)
+
+    if joints.shape[0] != 2:
+        joints = joints.T
+    joints = np.round(joints).astype(int)
+
+    jcolors = [
+        'light_pink', 'light_pink', 'light_pink', 'pink', 'pink', 'pink',
+        'light_blue', 'light_blue', 'light_blue', 'blue', 'blue', 'blue',
+        'purple', 'purple', 'red', 'green', 'green', 'white', 'white', 
+        'light_red', 'light_green', 'light_red', 'light_green', 'white'
+
+    ]
+
+    if joints.shape[1] == 24:
+        # parent indices -1 means no parents
+        parents = np.array([
+            -1,  0,  0,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  9,  9, 12, 13,
+       14, 16, 17, 18, 19, 20, 21
+        ])
+        # Left is light and right is dark
+        ecolors = {
+            0: 'light_pink',
+            1: 'light_pink',
+            2: 'light_pink',
+            3: 'pink',
+            4: 'pink',
+            5: 'pink',
+            6: 'light_blue',
+            7: 'light_blue',
+            8: 'light_blue',
+            9: 'blue',
+            10: 'blue',
+            11: 'blue',
+            12: 'purple',
+            13: 'light_green',
+            14: 'light_green',
+            15: 'purple',
+            16: 'blue',
+            17: 'blue',
+            18: 'purple',
+            19: 'light_green',
+            20: 'light_green',
+            21: 'purple',
+            22: 'blue',
+            23: 'blue',
+        }
+    elif joints.shape[1] == 19:
+        parents = np.array([
+            1,
+            2,
+            8,
+            9,
+            3,
+            4,
+            7,
+            8,
+            -1,
+            -1,
+            9,
+            10,
+            13,
+            -1,
+        ])
+        ecolors = {
+            0: 'light_pink',
+            1: 'light_pink',
+            2: 'light_pink',
+            3: 'pink',
+            4: 'pink',
+            5: 'pink',
+            6: 'light_blue',
+            7: 'light_blue',
+            10: 'light_blue',
+            11: 'blue',
+            12: 'purple'
+        }
+    else:
+        print('Unknown skeleton!!')
+
+    for child in range(len(parents)):
+        point = joints[:, child]
+        # If invisible skip
+        if vis is not None and vis[child] == 0:
+            continue
+        if draw_edges:
+            cv2.circle(image, (point[0], point[1]), radius, colors['white'], -1)
+            cv2.circle(image, (point[0], point[1]), radius - 1,colors[jcolors[child]], -1)
+        else:
+            # cv2.circle(image, (point[0], point[1]), 5, colors['white'], 1)
+            cv2.circle(image, (point[0], point[1]), radius - 1,
+                       colors[jcolors[child]], 1)
+            # cv2.circle(image, (point[0], point[1]), 5, colors['gray'], -1)
+        pa_id = parents[child]
+        if draw_edges and pa_id >= 0:
+            if vis is not None and vis[pa_id] == 0:
+                continue
+            point_pa = joints[:, pa_id]
+            cv2.circle(image, (point_pa[0], point_pa[1]), radius - 1,
+                       colors[jcolors[pa_id]], -1)
+            if child not in ecolors.keys():
+                print('bad')
+                pdb.set_trace()
+            cv2.line(image, (point[0], point[1]), (point_pa[0], point_pa[1]),
+                     colors[ecolors[child]], radius - 2)
+
+    # Convert back in original dtype
+    if input_is_float:
+        if max_val <= 1.:
+            image = image.astype(np.float32) / 255.
+        else:
+            image = image.astype(np.float32)
+
+    return image
+
+def draw_feature_dots(image, feat_array, vert_array, closest_vert_indices, colors):
+    # Convert grayscale image to BGR format for color drawing
+    output_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    # output_image = image.copy()
+
+    # Draw dots for each feature in the data array
+    iV = 0
+    for row in feat_array:
+        x = int(row[0])                # x coordinate
+        y = int(row[1])                # y coordinate
+        vert_idx = closest_vert_indices[iV]
+        xV = int(vert_array[vert_idx,0])
+        yV = int(vert_array[vert_idx,1])
+        color = colors[iV]
+        iV+=1
+        # Draw a dot on the output image
+        cv2.circle(output_image, (xV, yV), radius=2, color=color, thickness=-1)
+        cv2.circle(output_image, (x, y), radius=1, color=[0,0,0], thickness=-1)
+        cv2.imwrite('tmp.jpg', output_image)
+    return output_image
