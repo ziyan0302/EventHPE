@@ -118,6 +118,7 @@ def train(args):
             action_list[action] +=1
     # num_interpolations = 10
     numImgsInSplit = 8
+    drawImgInterval = 21
     
 
 
@@ -237,7 +238,7 @@ def train(args):
 
 
         print('===== Ebatch Optimization =====')
-        for iEpoch in range(50):
+        for iEpoch in range(200):
             total_loss = []
             featImgLocs = []
             for iSplit in range(totalSplits):
@@ -285,20 +286,29 @@ def train(args):
 
 
                 lossFor1Seq = loss_cor + 10*loss_temp + 10*loss_2D + 10*loss_3D
-                # lossFor1Seq = loss_cor
-                colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(len(p0))}
-                min_distances = min_distances.cpu().detach().numpy()
-                featAndVertOnImg = draw_feature_dots(frame_gray, p0[min_distances < tolerance], \
-                                                     (verts2d[-1]*H).type(torch.uint8).detach().cpu().numpy(), \
-                                                        closest_vert_indices[min_distances < tolerance], colors)
-                jointsForVisual = joints2d[-1].detach().cpu().numpy() * 256
-                jointsForVisual = jointsForVisual.astype(np.uint8)
                 
-                skeletonOnImg = draw_skeleton(frame_gray, jointsForVisual, draw_edges=True)
+                if iSplit % drawImgInterval == 1:
+                    colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(len(p0))}
+                    min_distances = min_distances.cpu().detach().numpy()
+                    frame_gray = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit-1), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
+                    featAndVertOnImg = draw_feature_dots(frame_gray, p0[min_distances < tolerance], \
+                                                        (verts2d[-1]*H).type(torch.uint8).detach().cpu().numpy(), \
+                                                            closest_vert_indices[min_distances < tolerance], colors)
+                    jointsForVisual = joints2d[-1].detach().cpu().numpy() * 256
+                    jointsForVisual = jointsForVisual.astype(np.uint8)
+                    
+                    skeletonOnImg = draw_skeleton(frame_gray, jointsForVisual, draw_edges=True)
 
-                writer.add_images('feat and closest vertics' , featAndVertOnImg, iEpoch*sequence_length + startImg, dataformats='HWC')
-                writer.add_images('skeleton' , skeletonOnImg, iEpoch*sequence_length + startImg, dataformats='HWC')
-                writer.add_scalar('training_loss', lossFor1Seq.item(), iEpoch*sequence_length + startImg)
+                    writer.add_images('feat and closest vertics' , featAndVertOnImg, iSplit + iEpoch*totalSplits, dataformats='HWC')
+                    writer.add_images('skeleton' , skeletonOnImg, iSplit + iEpoch*totalSplits, dataformats='HWC')
+                    writer.add_scalar('training_loss', lossFor1Seq.item(), iSplit + iEpoch*totalSplits)
+                    writer.add_scalar('loss2D', loss_2D.item(), iSplit + iEpoch*totalSplits)
+                    writer.add_scalar('loss3D', loss_3D.item(), iSplit + iEpoch*totalSplits)
+                    writer.add_scalar('lossTemp', loss_temp.item(), iSplit + iEpoch*totalSplits)
+                    writer.add_scalar('lossCor', loss_cor.item(), iSplit + iEpoch*totalSplits)
+                    
+
+                    
 
                 total_loss.append(lossFor1Seq.item())
                 lossFor1Seq.backward()
@@ -361,19 +371,20 @@ def train(args):
                 optimizer.zero_grad()
                 total_loss.append(loss_refined.item())
 
-                if os.path.exists('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit-1)):
-                    frame_gray = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
-                colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(closest_events_u.shape[0])}
-                # boundaryAndEventOnImg = draw_feature_dots(frame_gray, np.transpose(boundaryPixelsinSeq[-1], (1, 0)), \
-                #                                      closest_events_u, \
-                #                                         [x for x in range(closest_events_u.shape[0])], colors)
-                boundaryAndEventOnImg = draw_feature_dots(frame_gray, boundaryPixelsinSeq[-1][:,[1,0]], closest_events_u, [x for x in range(closest_events_u.shape[0])], colors)
-                # boundaryAndEventOnImg = draw_feature_dots(frame_gray, boundaryPixelsinSeq[-1], closest_events_u, [x for x in range(closest_events_u.shape[0])], colors)
-                
+                if iSplit % drawImgInterval == 1:
+                    if os.path.exists('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit-1)):
+                        frame_gray = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
+                    colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(closest_events_u.shape[0])}
+                    # boundaryAndEventOnImg = draw_feature_dots(frame_gray, np.transpose(boundaryPixelsinSeq[-1], (1, 0)), \
+                    #                                      closest_events_u, \
+                    #                                         [x for x in range(closest_events_u.shape[0])], colors)
+                    boundaryAndEventOnImg = draw_feature_dots(frame_gray, boundaryPixelsinSeq[-1][:,[1,0]], closest_events_u, [x for x in range(closest_events_u.shape[0])], colors)
+                    # boundaryAndEventOnImg = draw_feature_dots(frame_gray, boundaryPixelsinSeq[-1], closest_events_u, [x for x in range(closest_events_u.shape[0])], colors)
+                    
 
-                # cv2.imwrite('tmp.jpg', boundaryAndEventOnImg)
-                writer.add_images('boundary_on_Img' , boundaryAndEventOnImg, iEpoch*sequence_length + startImg, dataformats='HWC')
-                writer.add_scalar('refinement_loss', loss_refined.item(), iEpoch*sequence_length + startImg)
+                    # cv2.imwrite('tmp.jpg', boundaryAndEventOnImg)
+                    writer.add_images('boundary_on_Img' , boundaryAndEventOnImg, iSplit + iEpoch*totalSplits, dataformats='HWC')
+                    writer.add_scalar('refinement_loss', loss_refined.item(), iSplit + iEpoch*totalSplits)
 
             averLossForEpoch = sum(total_loss) / len(total_loss)
             print(iEpoch, " aver loss for Etemp & Ecor: ", averLossForEpoch)
