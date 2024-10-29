@@ -19,7 +19,7 @@ import pickle
 # from scipy.spatial import KDTree
 from eventcap_util import findCloestPoint, findClosestPointTorch, \
     find_closest_events, findBoundaryPixels, joints2dOnImage, \
-    joints2dandFeatOnImage, draw_feature_dots, draw_skeleton
+    joints2dandFeatOnImage, draw_feature_dots, draw_skeleton, findImgFeat
 from event_pose_estimation.geometry import projection_torch, rot6d_to_rotmat, delta_rotmat_to_rotmat
 import h5py
 import random
@@ -140,13 +140,15 @@ def train(args):
             events_ts = np.array(f['t'])
             img2events = np.searchsorted(events_ts, image_raw_event_ts)
         
-        print('===== E2D and E3D =====')
+        print('===== E2D and E3D initialization =====')
         # set initial SMPL parameters 
         # E2D implementation has ignored the optimization on OpenPose, just copy hmr result and interpolate to every tracking frame
         # Set initial SMPL parameters as learnable (e.g., pose and shape)
         learnable_pose_and_shape = torch.randn(totalSplits*numImgsInSplit, 85, device=device)
         interpolated_ori_trans = torch.zeros(totalSplits*numImgsInSplit,3).to(device)
         init_joints2d = torch.zeros(totalSplits*numImgsInSplit, 24, 2)
+        joints2dFromHMR = torch.zeros(totalSplits, 24, 2).to(device)
+        joints3dFromHMR = torch.zeros(totalSplits, 24, 3).to(device)
         
         for iSplit in range(totalSplits):
             startImg = iSplit * numImgsInSplit
@@ -172,6 +174,7 @@ def train(args):
                 learnable_pose_and_shape[startImg:(startImg+numImgsInSplit),:] = torch.from_numpy(np.concatenate([_params0[np.newaxis,:], _paramsF, _paramsN[np.newaxis,:]], axis=0))
                 _tranF = (1 - alphas[:, np.newaxis]) * _tran0 + alphas[:, np.newaxis] * _tranN
                 interpolated_ori_trans[startImg:(startImg+numImgsInSplit),:] = torch.from_numpy(np.concatenate([_tran0, _tranF, _tranN], axis=0))
+
         learnable_pose_and_shape.requires_grad_()
         learnable_params = [learnable_pose_and_shape]
         learnable_pose_and_shape.shape
@@ -192,7 +195,10 @@ def train(args):
         interpolated_ori_trans.shape
         joints3d_trans = joints3d + interpolated_ori_trans.unsqueeze(1).repeat(1, joints3d.shape[1], 1)
         joints2d = projection_torch(joints3d_trans, cam_intr, H, W)
-        joints2d.shape
+        # get joints 2d and 3d from HMR for E2d and E3d
+        for iSplit in range(totalSplits):
+            joints2dFromHMR[iSplit] = joints2d[iSplit*numImgsInSplit].clone().detach()
+            joints3dFromHMR[iSplit] = joints3d_trans[iSplit*numImgsInSplit].clone().detach()
         init_joints2d = joints2d.clone().detach()
         # joints2dOnImage(joints2d, learnable_pose_and_shape.shape[0], args, action, saved_folder = "/home/ziyan/02_research/EventHPE/event_pose_estimation/init_folder")
 
@@ -206,6 +212,31 @@ def train(args):
         model = model.to(device=device)  # move the model parameters to CPU/GPU
 
 
+        print('===== Img Feature Extraction =====')
+        featOnSeq = []
+        # Take first frame and find corners in it
+        for iSplit in range(totalSplits):
+            startImg = iSplit * numImgsInSplit
+            if os.path.exists('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg)):
+                first_gray = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
+            else:
+                print('the first image of sequence doesnt exist')
+            imgsIn1Split = first_gray[np.newaxis, :,:]
+
+            for iImg in range(1, numImgsInSplit):
+                if os.path.exists('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+iImg)):
+                    frame_gray = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+iImg), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
+                else:
+                    print('next image doesnt exist')
+                imgsIn1Split = np.vstack([imgsIn1Split, frame_gray[np.newaxis, :,:]])
+            feats = findImgFeat(imgsIn1Split)
+            imgsIn1Split.shape
+            for iImg in range(numImgsInSplit):      
+                featOnSeq.append(feats[iImg])
+
+
+
+        print('===== Ebatch Optimization =====')
         for iEpoch in range(50):
             total_loss = []
             featImgLocs = []
@@ -229,51 +260,22 @@ def train(args):
                 # verts2d_pix = (verts2d*H).type(torch.uint8).detach().cpu().numpy()
                 verts2d_pix = (verts2d*H).detach().cpu().numpy() 
 
+                # print('===== E2D =====')
+                loss_2D = torch.tensor(0.0, requires_grad=True)
+                loss_2D = loss_2D + torch.sum(torch.norm(joints2d - joints2dFromHMR[iSplit], dim=2)**2)
+                # print('===== E3D =====')
+                loss_3D = torch.tensor(0.0, requires_grad=True)
+                loss_3D = loss_3D + torch.sum(torch.norm(joints3d_trans - joints3dFromHMR[iSplit], dim=2)**2)
+
                 # print('===== Ecor =====')
                 # Initialize the scalar to store the cumulative loss
                 loss_cor = torch.tensor(0.0, requires_grad=True)
-                # params for ShiTomasi corner detection
-                feature_params = dict( maxCorners = 100,
-                                    qualityLevel = 0.3,
-                                    minDistance = 7,
-                                    blockSize = 7 )
 
-                # Parameters for lucas kanade optical flow
-                lk_params = dict( winSize  = (15, 15),
-                                maxLevel = 2,
-                                criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
-                
-                # Take first frame and find corners in it
-                if os.path.exists('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg)):
-                    old_gray = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
-                else:
-                    print('the first image of sequence doesnt exist')
-                p0 = cv2.goodFeaturesToTrack(old_gray, mask = None, **feature_params)
-                
-                # features on image using cv2 tracker
-                featImgLocs.append(p0.reshape(-1,2))
 
-                for iImg in range(1, numImgsInSplit):
-                    if os.path.exists('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+iImg)):
-                        frame_gray = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+iImg), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
-                    else:
-                        print('next image doesnt exist')
-                    # calculate optical flow
-                    p1, st, err = cv2.calcOpticalFlowPyrLK(old_gray, frame_gray, p0, None, **lk_params)
-                    # Select good points
-                    if p1 is not None:
-                        good_new = p1[st==1]
-                        good_old = p0[st==1]
-                    # Now update the previous frame and previous points
-                    old_gray = frame_gray.copy()
-                    p0 = good_new.reshape(-1, 1, 2)
-                    featImgLocs.append(p0.reshape(-1,2))
-
+                for iImg in range(0, numImgsInSplit):
                     tolerance = 10
-                    if (0):
-                        distances, closest_vert_indices = findCloestPoint(verts2d_pix[iImg], p0.squeeze(1))
-                        selectedDistancesSqSum = np.sum(distances[distances < tolerance]**2)
-                    p0tensor = torch.tensor(p0.squeeze(1), requires_grad=False).to(device)  # (n, 2)
+                    p0 = featOnSeq[startImg+iImg]
+                    p0tensor = torch.tensor(p0, requires_grad=False).to(device)  # (n, 2)
                     min_distances, closest_vert_indices = findClosestPointTorch(verts2d[iImg]*H, p0tensor)
                     selectedDistancesSqSum = torch.sum(min_distances[min_distances < tolerance]**2)
                     loss_cor = loss_cor + selectedDistancesSqSum
@@ -282,11 +284,11 @@ def train(args):
                 loss_temp = torch.norm((joints2d[1:] - joints2d[:-1]), dim=2).sum()
 
 
-                lossFor1Seq = loss_cor + 10*loss_temp
+                lossFor1Seq = loss_cor + 10*loss_temp + 10*loss_2D + 10*loss_3D
                 # lossFor1Seq = loss_cor
                 colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(len(p0))}
                 min_distances = min_distances.cpu().detach().numpy()
-                featAndVertOnImg = draw_feature_dots(frame_gray, p0.squeeze(1)[min_distances < tolerance], \
+                featAndVertOnImg = draw_feature_dots(frame_gray, p0[min_distances < tolerance], \
                                                      (verts2d[-1]*H).type(torch.uint8).detach().cpu().numpy(), \
                                                         closest_vert_indices[min_distances < tolerance], colors)
                 jointsForVisual = joints2d[-1].detach().cpu().numpy() * 256
@@ -368,10 +370,7 @@ def train(args):
                 boundaryAndEventOnImg = draw_feature_dots(frame_gray, boundaryPixelsinSeq[-1][:,[1,0]], closest_events_u, [x for x in range(closest_events_u.shape[0])], colors)
                 # boundaryAndEventOnImg = draw_feature_dots(frame_gray, boundaryPixelsinSeq[-1], closest_events_u, [x for x in range(closest_events_u.shape[0])], colors)
                 
-                closest_events_u[:,1].min()
-                boundaryPixelsinSeq[-1].shape
-                boundaryPixelsinSeq[-1][0]
-                closest_events_u[0]
+
                 # cv2.imwrite('tmp.jpg', boundaryAndEventOnImg)
                 writer.add_images('boundary_on_Img' , boundaryAndEventOnImg, iEpoch*sequence_length + startImg, dataformats='HWC')
                 writer.add_scalar('refinement_loss', loss_refined.item(), iEpoch*sequence_length + startImg)

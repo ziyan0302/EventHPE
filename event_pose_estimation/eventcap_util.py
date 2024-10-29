@@ -476,3 +476,36 @@ def draw_feature_dots(image, feat_array, vert_array, closest_vert_indices, color
         cv2.circle(output_image, (x, y), radius=1, color=[0,0,0], thickness=-1)
         cv2.imwrite('tmp.jpg', output_image)
     return output_image
+
+def findImgFeat(gray_img_sequence):
+    # params for ShiTomasi corner detection
+    feature_params = dict( maxCorners = 100,
+                        qualityLevel = 0.3,
+                        minDistance = 7,
+                        blockSize = 7 )
+
+    # Parameters for lucas kanade optical flow
+    lk_params = dict( winSize  = (15, 15),
+                    maxLevel = 2,
+                    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
+
+    # Take first frame and find corners in it
+    old_gray = gray_img_sequence[0]
+    p0 = cv2.goodFeaturesToTrack(old_gray, mask = None, **feature_params)
+
+
+    # features on image using cv2 tracker
+    featImgLocs = [p0.reshape(-1,2)]
+    for iImg in range(1, gray_img_sequence.shape[0]):
+        frame_gray = gray_img_sequence[iImg]
+        # calculate optical flow
+        p1, st, err = cv2.calcOpticalFlowPyrLK(old_gray, frame_gray, p0, None, **lk_params)
+        # Select good points
+        if p1 is not None:
+            good_new = p1[st==1]
+            good_old = p0[st==1]
+        # Now update the previous frame and previous points
+        old_gray = frame_gray.copy()
+        p0 = good_new.reshape(-1, 1, 2)
+        featImgLocs.append(p0.reshape(-1,2))
+    return featImgLocs
