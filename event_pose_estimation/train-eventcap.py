@@ -262,10 +262,10 @@ def train(args):
 
                 # print('===== E2D =====')
                 loss_2D = torch.tensor(0.0, requires_grad=True)
-                loss_2D = loss_2D + torch.sum(torch.norm(joints2d - joints2dFromHMR[iSplit], dim=2)**2)
+                loss_2D = loss_2D + torch.sum(torch.norm(joints2d[0] - joints2dFromHMR[iSplit], dim=1)**2)
                 # print('===== E3D =====')
                 loss_3D = torch.tensor(0.0, requires_grad=True)
-                loss_3D = loss_3D + torch.sum(torch.norm(joints3d_trans - joints3dFromHMR[iSplit], dim=2)**2)
+                loss_3D = loss_3D + torch.sum(torch.norm(joints3d_trans[0] - joints3dFromHMR[iSplit], dim=1)**2)
 
                 # print('===== Ecor =====')
                 # Initialize the scalar to store the cumulative loss
