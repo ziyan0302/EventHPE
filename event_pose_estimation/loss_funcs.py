@@ -11,10 +11,10 @@ def compute_mpjpe(pred, target):
 
 
 def compute_pa_mpjpe(pred, target):
-    B, T, _, _ = pred.size()
+    T, _, _ = pred.size()
     pred_hat = batch_compute_similarity_transform_torch(pred.view(-1, 24, 3), target.view(-1, 24, 3))
     pa_mpjpe = torch.sqrt(torch.sum((pred_hat - target.view(-1, 24, 3)) ** 2, dim=-1))
-    return pa_mpjpe.view(B, T, 24)
+    return pa_mpjpe.view(T, 24)
 
 
 def compute_pelvis_mpjpe(pred, target):

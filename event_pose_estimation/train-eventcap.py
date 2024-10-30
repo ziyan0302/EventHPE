@@ -21,6 +21,7 @@ from eventcap_util import findCloestPoint, findClosestPointTorch, \
     find_closest_events, findBoundaryPixels, joints2dOnImage, \
     joints2dandFeatOnImage, draw_feature_dots, draw_skeleton, findImgFeat
 from event_pose_estimation.geometry import projection_torch, rot6d_to_rotmat, delta_rotmat_to_rotmat
+from event_pose_estimation.loss_funcs import compute_mpjpe, compute_pa_mpjpe
 import h5py
 import random
 
@@ -32,79 +33,16 @@ def train(args):
     # GPU or CPU configuration
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda:%s" % args.gpu_id if use_cuda else "cpu")
-    dtype = torch.float32
 
-    # # set dataset
-    dataset_train = TrackingDataloader(
-        data_dir=args.data_dir,
-        max_steps=args.max_steps,
-        num_steps=args.num_steps,
-        skip=args.skip,
-        events_input_channel=args.events_input_channel,
-        img_size=args.img_size,
-        mode='train',
-        use_flow=args.use_flow,
-        use_flow_rgb=args.use_flow_rgb,
-        use_hmr_feats=args.use_hmr_feats,
-        use_vibe_init=args.use_vibe_init,
-        use_hmr_init=args.use_hmr_init,
-    )
-    # train_generator = DataLoader(
-    #     dataset_train,
-    #     batch_size=args.batch_size,
-    #     shuffle=False,
-    #     num_workers=args.num_worker,
-    #     pin_memory=args.pin_memory
-    # )
-    # total_iters = len(dataset_train) // args.batch_size + 1
-
-    # dataset_val = TrackingDataloader(
-    #     data_dir=args.data_dir,
-    #     max_steps=args.max_steps,
-    #     num_steps=args.num_steps,
-    #     skip=args.skip,
-    #     events_input_channel=args.events_input_channel,
-    #     img_size=args.img_size,
-    #     mode='test',
-    #     use_flow=args.use_flow,
-    #     use_flow_rgb=args.use_flow_rgb,
-    #     use_hmr_feats=args.use_hmr_feats,
-    #     use_vibe_init=args.use_vibe_init,
-    #     use_hmr_init=args.use_hmr_init,
-    # )
-    # val_generator = DataLoader(
-    #     dataset_val,
-    #     batch_size=args.batch_size,
-    #     shuffle=False,
-    #     num_workers=args.num_worker,
-    #     pin_memory=args.pin_memory
-    # )
-
-    smpl_dir = '/home/ziyan/02_research/EventHPE/smpl_model/basicModel_m_lbs_10_207_0_v1.0.0.pkl'
+    smpl_dir = args.smpl_dir
     print('[smpl_dir] %s' % smpl_dir)
-
-    mse_func = torch.nn.MSELoss()
-    if args.use_amp: # true
-        scaler = torch.cuda.amp.GradScaler()
-    else:
-        scaler = None
-
 
     # set tensorboard
     start_time = time.strftime("%Y-%m-%d-%H-%M", time.localtime())
     writer = SummaryWriter('%s/%s/%s' % (args.result_dir, args.log_dir, start_time))
     print('[tensorboard] %s/%s/%s' % (args.result_dir, args.log_dir, start_time))
-    if args.model_dir is not None:
-        print('[model dir] model loaded from %s' % args.model_dir)
-        checkpoint = torch.load(args.model_dir, map_location=device)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        if 'optimizer_state_dict' in checkpoint.keys():
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    save_dir = '%s/%s/%s' % (args.result_dir, args.log_dir, start_time)
-    model_dir = '%s/%s/%s/model_events_pose.pkl' % (args.result_dir, args.log_dir, start_time)
 
     # training
-    best_loss = 1e4
     print('------------------------------------- 3.2. Hybrid Pose Batch Optimization ------------------------------------')
     if os.path.exists('%s/%s_track%02i%02i.pkl' % (args.data_dir, 'train', args.num_steps, args.skip)):
         all_clips = pickle.load(
@@ -180,7 +118,7 @@ def train(args):
         learnable_params = [learnable_pose_and_shape]
         learnable_pose_and_shape.shape
         # set optimizer
-        optimizer = torch.optim.Adam(learnable_params, lr=args.lr_start)
+        optimizer = torch.optim.SGD(learnable_params, lr=args.lr_start, momentum=0)
         interpolated_rotmats = batch_rodrigues(learnable_pose_and_shape[:, 3:75].reshape(-1, 3)).view(-1, 24, 3, 3)  # [B, 24, 3, 3]
         interpolated_rotmats.shape
         learnable_pose_and_shape[:,75:85].shape
@@ -191,9 +129,11 @@ def train(args):
         # verts would participate in Ecor 
         # joints2d would participate in Etemp
         # verts = verts + interpolated_ori_trans[startImg:(startImg+numImgsInSplit)].unsqueeze(1).repeat(1, verts.shape[1], 1)
-        cam_intr = torch.from_numpy(dataset_train.cam_intr).float()
-        H, W = 256, 256
-        interpolated_ori_trans.shape
+        scale = args.img_size / 1280.
+        cam_intr = np.array([1679.3, 1679.3, 641, 641]) * scale
+        cam_intr = torch.from_numpy(cam_intr).float()
+        H, W = args.img_size, args.img_size
+        
         joints3d_trans = joints3d + interpolated_ori_trans.unsqueeze(1).repeat(1, joints3d.shape[1], 1)
         joints2d = projection_torch(joints3d_trans, cam_intr, H, W)
         # get joints 2d and 3d from HMR for E2d and E3d
@@ -238,7 +178,7 @@ def train(args):
 
 
         print('===== Ebatch Optimization =====')
-        for iEpoch in range(200):
+        for iEpoch in range(args.batch_optimization_epochs):
             total_loss = []
             featImgLocs = []
             for iSplit in range(totalSplits):
@@ -253,8 +193,6 @@ def train(args):
                                     get_skin=True,
                                     rotmats=interpolated_rotmats.view(-1, 24, 3, 3))
                 verts = verts + interpolated_ori_trans[startImg:(startImg+numImgsInSplit)].unsqueeze(1).repeat(1, verts.shape[1], 1)
-                cam_intr = torch.from_numpy(dataset_train.cam_intr).float()
-                H, W = 256, 256
                 joints3d_trans = joints3d + interpolated_ori_trans[startImg:(startImg+numImgsInSplit)].unsqueeze(1).repeat(1, joints3d.shape[1], 1)
                 joints2d = projection_torch(joints3d_trans, cam_intr, H, W)
                 verts2d = projection_torch(verts, cam_intr, H, W)
@@ -267,7 +205,6 @@ def train(args):
                 # print('===== E3D =====')
                 loss_3D = torch.tensor(0.0, requires_grad=True)
                 loss_3D = loss_3D + torch.sum(torch.norm(joints3d_trans[0] - joints3dFromHMR[iSplit], dim=1)**2)
-
                 # print('===== Ecor =====')
                 # Initialize the scalar to store the cumulative loss
                 loss_cor = torch.tensor(0.0, requires_grad=True)
@@ -285,7 +222,7 @@ def train(args):
                 loss_temp = torch.norm((joints2d[1:] - joints2d[:-1]), dim=2).sum()
 
 
-                lossFor1Seq = loss_cor + 10*loss_temp + 10*loss_2D + 10*loss_3D
+                lossFor1Seq = args.cor_loss*loss_cor + args.temp_loss*loss_temp + args.joints2d_loss*loss_2D + args.joints3d_loss*loss_3D
                 
                 if iSplit % drawImgInterval == 1:
                     colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(len(p0))}
@@ -315,6 +252,8 @@ def train(args):
                 learnable_params[0].grad
                 optimizer.step()
                 optimizer.zero_grad()
+            # if (iEpoch % drawImgInterval  == 1):
+            #     pdb.set_trace()
 
             averLossForEpoch = sum(total_loss) / len(total_loss)
             print(iEpoch, f" aver loss for Etemp & Ecor: {averLossForEpoch:.3f}")
@@ -331,11 +270,11 @@ def train(args):
         # joints2dandFeatOnImage(joints2dSeq, featImgLocs, learnable_pose_and_shape.shape[0], args, action, saved_folder = "/home/ziyan/02_research/EventHPE/event_pose_estimation/tmp_folder")
             
         print('------------------------------------- 3.3. Event-Based Pose Refinement ------------------------------------')
-        for iEpoch in range(20):
+        for iEpoch in range(args.event_refinement_epochs):
             total_loss = []
 
             for iSplit in range(totalSplits):
-                print('===== Esil =====')
+                # print('===== Esil =====')
                 loss_sil = torch.tensor(0.0, requires_grad=True)
                 startImg = iSplit * numImgsInSplit
                 interpolated_rotmats = batch_rodrigues(learnable_pose_and_shape[startImg:(startImg+numImgsInSplit), 3:75].reshape(-1, 3)).view(-1, 24, 3, 3)  # [B, 24, 3, 3]
@@ -345,8 +284,6 @@ def train(args):
                                     get_skin=True,
                                     rotmats=interpolated_rotmats.view(-1, 24, 3, 3))
                 verts = verts + interpolated_ori_trans[startImg:(startImg+numImgsInSplit)].unsqueeze(1).repeat(1, verts.shape[1], 1)
-                cam_intr = torch.from_numpy(dataset_train.cam_intr).float()
-                H, W = 256, 256
                 joints3d_trans = joints3d + interpolated_ori_trans[startImg:(startImg+numImgsInSplit)].unsqueeze(1).repeat(1, joints3d.shape[1], 1)
                 joints2d = projection_torch(joints3d_trans, cam_intr, H, W)
                 verts2d = projection_torch(verts, cam_intr, H, W)
@@ -360,11 +297,12 @@ def train(args):
                     distanceToClosestEvents = torch.norm(torch.tensor((boundaryPixelsinSeq[iImg] - closest_events_u)/H).to(torch.float16), dim = 1).to(device)
                     loss_sil = loss_sil + torch.sum((distanceToClosestEvents)**2)
                 
-                print('===== Estab =====')
+                # print('===== Estab =====')
                 loss_stab = torch.sum(torch.norm(joints2d - init_joints2d[startImg:(startImg+numImgsInSplit)], dim=2)**2)
                 joints2d.shape
                 init_joints2d[startImg:(startImg+numImgsInSplit)].shape
-                loss_refined = loss_sil + loss_stab
+                loss_refined = args.sil_loss*loss_sil + args.stab_loss*loss_stab
+
                 # loss_refined = loss_sil
                 loss_refined.backward()
                 optimizer.step()
@@ -389,32 +327,36 @@ def train(args):
             averLossForEpoch = sum(total_loss) / len(total_loss)
             print(iEpoch, " aver loss for Etemp & Ecor: ", averLossForEpoch)
 
+        torch.save(learnable_pose_and_shape, 'learnable_parameters.pt')
+        evaluation(args, action, learnable_pose_and_shape, interpolated_ori_trans, model, cam_intr, device)
+def evaluation(args, action, learnable_pose_and_shape, interpolated_ori_trans, model, cam_intr, device):
+    for iSplit in range(100):
+        joints2dlist = []
+        joints3dlist = []
+        for iImg in range(8):
+            beta, theta, tran, joints3dGT, joints2dGT = \
+            joblib.load('%s/pose_events/%s/pose%04i.pkl' % (args.data_dir, action, iSplit*8 + iImg))
+            joints2dlist.append(joints2dGT)
+            joints3dlist.append(joints3dGT)
+        joints2dGTInSplit = torch.from_numpy(np.array(joints2dlist)).unsqueeze(0)
+        joints3dGTInSplit = torch.from_numpy(np.array(joints3dlist)).unsqueeze(0).to(device)
 
-def write_tensorboard(writer, results, epoch, progress, mode, args):
-    action, sample_frames_idx = results['info']
-    verts = results['verts'].cpu().numpy()  # [T+1, 6890, 3]
-    cam_intr = results['cam_intr'].cpu().numpy()
-    faces = results['faces']
+        learnable_pose_and_shape[iSplit*8:(iSplit+1)*8]
+        interpolated_rotmats = batch_rodrigues(learnable_pose_and_shape[iSplit*8:(iSplit+1)*8, 3:75].reshape(-1, 3)).view(-1, 24, 3, 3)  # [B, 24, 3, 3]
+        interpolated_rotmats.shape
+        verts, joints3d, _ = model(beta=learnable_pose_and_shape[iSplit*8:(iSplit+1)*8,75:85].view(-1, 10),
+                            theta=None,
+                            get_skin=True,
+                            rotmats=interpolated_rotmats.view(-1, 24, 3, 3))
+        verts = verts + interpolated_ori_trans[iSplit*8:(iSplit+1)*8].unsqueeze(1).repeat(1, verts.shape[1], 1)
+        H, W = args.img_size, args.img_size
+        joints3d_trans = joints3d + interpolated_ori_trans[iSplit*8:(iSplit+1)*8].unsqueeze(1).repeat(1, joints3d.shape[1], 1)
+        joints2d = projection_torch(joints3d_trans, cam_intr, H, W)
+        mpjpe = compute_mpjpe(joints3d, joints3dGTInSplit)  # [B, T, 24]
+        pa_mpjpe = compute_pa_mpjpe(joints3d, joints3dGTInSplit)  # [B, T, 24]
 
-    fullpics, render_imgs = [], []
-    for i, frame_idx in enumerate(sample_frames_idx):
-        img = cv2.imread('%s/full_pic_%i/%s/fullpic%04i.jpg' % (args.data_dir, args.img_size, action, frame_idx))
-        fullpics.append(img[:, :, 0:1])
+    pdb.set_trace()
 
-        vert = verts[i]
-        dist = np.abs(np.mean(vert, axis=0)[2])
-        # render_img = (util.render_model(vert, faces, args.img_size, args.img_size, cam_intr, np.zeros([3]),
-        #                                 np.zeros([3]), near=0.1, far=20 + dist, img=img) * 255).astype(np.uint8)
-        render_img = util.render_model(vert, faces, args.img_size, args.img_size, cam_intr, np.zeros([3]),
-                                       np.zeros([3]), near=0.1, far=20 + dist, img=img)
-        render_imgs.append(render_img)
-
-    fullpics = np.transpose(np.stack(fullpics, axis=0), [0, 3, 1, 2]) / 255.
-    fullpics = np.concatenate([fullpics, fullpics, fullpics], axis=1)
-    writer.add_images('%s/fullpic%06i' % (mode, epoch * 100 + progress), fullpics, 1, dataformats='NCHW')
-
-    render_imgs = np.transpose(np.stack(render_imgs, axis=0), [0, 3, 1, 2])
-    writer.add_images('%s/shape%06i' % (mode, epoch * 100 + progress), render_imgs, 1, dataformats='NCHW')
 
 
 def get_args():
@@ -434,38 +376,20 @@ def get_args():
     parser.add_argument('--data_dir', type=str, default='/home/ziyan/02_research/EventHPE/data_event/data_event_out')
     parser.add_argument('--result_dir', type=str, default='/home/ziyan/02_research/EventHPE/exp_track')
     parser.add_argument('--log_dir', type=str, default='log')
-    parser.add_argument('--model_dir', type=str, default=None)
     parser.add_argument('--smpl_dir', type=str, default='/home/ziyan/02_research/EventHPE/smpl_model/basicModel_m_lbs_10_207_0_v1.0.0.pkl')
-    parser.add_argument('--num_worker', type=int, default=0)
-    parser.add_argument('--pin_memory', type=int, default=1)
-    parser.add_argument('--use_amp', type=int, default=1)
-
-    parser.add_argument('--events_input_channel', type=int, default=8)
-    parser.add_argument('--rnn_layers', type=int, default=1)
-    parser.add_argument('--img_size', type=int, default=256)
-    parser.add_argument('--max_steps', type=int, default=8)
     parser.add_argument('--num_steps', type=int, default=8)
     parser.add_argument('--skip', type=int, default=2)
-    parser.add_argument('--use_hmr_feats', type=int, default=1)
-    parser.add_argument('--use_flow', type=int, default=1)
-    parser.add_argument('--use_flow_rgb', type=int, default=0)
-    parser.add_argument('--use_geodesic_loss', type=int, default=1)
-    parser.add_argument('--vibe_regressor', type=int, default=0)
-    parser.add_argument('--use_vibe_init', type=int, default=0)
-    parser.add_argument('--use_hmr_init', type=int, default=0)
-
-    parser.add_argument('--delta_tran_loss', type=float, default=0)
-    parser.add_argument('--tran_loss', type=float, default=1)
-    parser.add_argument('--theta_loss', type=float, default=10)
-    parser.add_argument('--joints3d_loss', type=float, default=1)
-    parser.add_argument('--joints2d_loss', type=float, default=10)
-    parser.add_argument('--flow_loss', type=float, default=0.1)
-
-    parser.add_argument('--batch_size', type=int, default=8)
-    parser.add_argument('--epochs', type=int, default=10)
-    parser.add_argument('--lr_start', '-lr', type=float, default=0.01)
-    parser.add_argument('--lr_decay_rate', type=float, default=0.1)
-    parser.add_argument('--lr_decay_step', type=float, default=1)
+    parser.add_argument('--img_size', type=int, default=256)
+    parser.add_argument('--batch_optimization_epochs', type=int, default=1)
+    parser.add_argument('--event_refinement_epochs', type=int, default=1)
+    parser.add_argument('--joints3d_loss', type=float, default=0.25)
+    parser.add_argument('--joints2d_loss', type=float, default=0.25)
+    parser.add_argument('--temp_loss', type=float, default=0.1)
+    parser.add_argument('--cor_loss', type=float, default=0.01)
+    parser.add_argument('--stab_loss', type=float, default=1)
+    parser.add_argument('--sil_loss', type=float, default=1)
+    
+    parser.add_argument('--lr_start', '-lr', type=float, default=0.001)
     args = parser.parse_args()
     print_args(args)
     return args
