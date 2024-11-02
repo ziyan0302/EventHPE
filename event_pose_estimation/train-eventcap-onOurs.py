@@ -56,13 +56,15 @@ def train(args):
             action_list[action] +=1
     # num_interpolations = 10
     numImgsInSplit = 8
-    drawImgInterval = 21
+    drawImgInterval = 100
     
 
 
 
     # for action, sequence_length in action_list.items():
     for action, sequence_length in action_list.items():
+        action = 'subject01_group1_time1'
+        sequence_length = 1345
         # set model
         modelSeq = SMPL(smpl_dir, sequence_length)
         # Freeze the rest of the SMPL model parameters
@@ -117,8 +119,6 @@ def train(args):
         learnable_pose_and_shape.requires_grad_()
         learnable_params = [learnable_pose_and_shape]
         learnable_pose_and_shape.shape
-        # set optimizer
-        optimizer = torch.optim.SGD(learnable_params, lr=args.lr_start, momentum=0)
         interpolated_rotmats = batch_rodrigues(learnable_pose_and_shape[:, 3:75].reshape(-1, 3)).view(-1, 24, 3, 3)  # [B, 24, 3, 3]
         interpolated_rotmats.shape
         learnable_pose_and_shape[:,75:85].shape
@@ -138,8 +138,10 @@ def train(args):
         joints2d = projection_torch(joints3d_trans, cam_intr, H, W)
         # get joints 2d and 3d from HMR for E2d and E3d
         for iSplit in range(totalSplits):
-            joints2dFromHMR[iSplit] = joints2d[iSplit*numImgsInSplit].clone().detach()
-            joints3dFromHMR[iSplit] = joints3d_trans[iSplit*numImgsInSplit].clone().detach()
+            joint2DHMR, joint3DHMR, _, transHMR, _ = \
+                joblib.load('%s/hmr_results/%s/fullpic%04i_hmr.pkl' % (args.data_dir, action, iSplit*numImgsInSplit))
+            joints2dFromHMR[iSplit] = torch.from_numpy(joint2DHMR/H)
+            joints3dFromHMR[iSplit] = torch.from_numpy(joint3DHMR + np.tile(transHMR,(joint3DHMR.shape[0],1)))
         init_joints2d = joints2d.clone().detach()
         # joints2dOnImage(joints2d, learnable_pose_and_shape.shape[0], args, action, saved_folder = "/home/ziyan/02_research/EventHPE/event_pose_estimation/init_folder")
 
@@ -178,10 +180,13 @@ def train(args):
 
 
         print('===== Ebatch Optimization =====')
-        for iEpoch in range(args.batch_optimization_epochs):
-            total_loss = []
-            featImgLocs = []
-            for iSplit in range(totalSplits):
+        # for iSplit in range(totalSplits):
+        for iSplit in range(0,15):
+            # set optimizer
+            # optimizer = torch.optim.SGD(learnable_params, lr=args.lr_start, momentum=0)
+            optimizer = torch.optim.Adam(learnable_params, lr=args.lr_start)
+
+            for iEpoch in range(args.batch_optimization_epochs):
                 startImg = iSplit * numImgsInSplit
 
                 # verts would participate in Ecor 
@@ -219,12 +224,23 @@ def train(args):
                     loss_cor = loss_cor + selectedDistancesSqSum/H
 
                 # print('===== Etemp =====')
-                loss_temp = torch.norm((joints2d[1:] - joints2d[:-1]), dim=2).sum()
+                loss_temp = torch.tensor(0.0, requires_grad=True)
+                for iImg in range(0, numImgsInSplit):
+                    p0 = featOnSeq[startImg+iImg]
+                    p0tensor = torch.tensor(p0, requires_grad=False).to(device)  # (n, 2)
+                    min_distances, closest_joints_indices = findClosestPointTorch(joints2d[iImg]*H, p0tensor)
+                    selectedJoints = closest_joints_indices[min_distances < tolerance]
+                    if iImg > 0:
+                        loss_temp = loss_temp + torch.norm((joints2d[iImg, selectedJoints,:] - joints2d[iImg-1,selectedJoints, :])\
+                                                           , dim=2).sum()
+
+                # loss_temp = torch.norm((joints2d[1:, selectedJoints,:] - joints2d[:-1,selectedJoints, :]), dim=2).sum()
 
 
-                lossFor1Seq = args.cor_loss*loss_cor + args.temp_loss*loss_temp + args.joints2d_loss*loss_2D + args.joints3d_loss*loss_3D
+                # lossFor1Seq = args.cor_loss*loss_cor + args.temp_loss*loss_temp + args.joints2d_loss*loss_2D + args.joints3d_loss*loss_3D
+                lossFor1Seq = args.cor_loss*loss_cor + args.joints2d_loss*loss_2D + args.joints3d_loss*loss_3D
                 
-                if iSplit % drawImgInterval == 1:
+                if iEpoch % drawImgInterval == 1:
                     colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(len(p0))}
                     min_distances = min_distances.cpu().detach().numpy()
                     frame_gray = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit-1), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
@@ -236,18 +252,18 @@ def train(args):
                     
                     skeletonOnImg = draw_skeleton(frame_gray, jointsForVisual, draw_edges=True)
 
-                    writer.add_images('feat and closest vertics' , featAndVertOnImg, iSplit + iEpoch*totalSplits, dataformats='HWC')
-                    writer.add_images('skeleton' , skeletonOnImg, iSplit + iEpoch*totalSplits, dataformats='HWC')
-                    writer.add_scalar('training_loss', lossFor1Seq.item(), iSplit + iEpoch*totalSplits)
-                    writer.add_scalar('loss2D', loss_2D.item(), iSplit + iEpoch*totalSplits)
-                    writer.add_scalar('loss3D', loss_3D.item(), iSplit + iEpoch*totalSplits)
-                    writer.add_scalar('lossTemp', loss_temp.item(), iSplit + iEpoch*totalSplits)
-                    writer.add_scalar('lossCor', loss_cor.item(), iSplit + iEpoch*totalSplits)
+                    writer.add_images('feat and closest vertics' , featAndVertOnImg, iEpoch + iSplit*args.batch_optimization_epochs, dataformats='HWC')
+                    writer.add_images('skeleton' , skeletonOnImg, iEpoch + iSplit*args.batch_optimization_epochs, dataformats='HWC')
+                    writer.add_scalar('training_loss', lossFor1Seq.item(), iEpoch + iSplit*args.batch_optimization_epochs)
+                    writer.add_scalar('loss2D', loss_2D.item(), iEpoch + iSplit*args.batch_optimization_epochs)
+                    writer.add_scalar('loss3D', loss_3D.item(), iEpoch + iSplit*args.batch_optimization_epochs)
+                    writer.add_scalar('lossTemp', loss_temp.item(), iEpoch + iSplit*args.batch_optimization_epochs)
+                    writer.add_scalar('lossCor', loss_cor.item(), iEpoch + iSplit*args.batch_optimization_epochs)
                     
 
                     
 
-                total_loss.append(lossFor1Seq.item())
+                # total_loss.append(lossFor1Seq.item())
                 lossFor1Seq.backward()
                 learnable_params[0].grad
                 optimizer.step()
@@ -255,25 +271,26 @@ def train(args):
             # if (iEpoch % drawImgInterval  == 1):
             #     pdb.set_trace()
 
-            averLossForEpoch = sum(total_loss) / len(total_loss)
-            print(iEpoch, f" aver loss for Etemp & Ecor: {averLossForEpoch:.3f}")
+            # averLossForEpoch = sum(total_loss) / len(total_loss)
+                if iEpoch % drawImgInterval == 0:
+                    print(iEpoch, f" aver loss for {iSplit}: {lossFor1Seq.item():.3f}")
             
-            interpolated_rotmats = batch_rodrigues(learnable_pose_and_shape[:, 3:75].reshape(-1, 3)).view(-1, 24, 3, 3)  # [B, 24, 3, 3]
-            _, joints3dSeq, _ = modelSeq(beta=learnable_pose_and_shape[:,75:85].view(-1, 10),
-                        theta=None,
-                        get_skin=True,
-                        rotmats=interpolated_rotmats.view(-1, 24, 3, 3))
-            joints3d_transSeq = joints3dSeq + interpolated_ori_trans.unsqueeze(1).repeat(1, joints3d.shape[1], 1)
-            joints2dSeq = projection_torch(joints3d_transSeq, cam_intr, H, W)
+            # interpolated_rotmats = batch_rodrigues(learnable_pose_and_shape[:, 3:75].reshape(-1, 3)).view(-1, 24, 3, 3)  # [B, 24, 3, 3]
+            # _, joints3dSeq, _ = modelSeq(beta=learnable_pose_and_shape[:,75:85].view(-1, 10),
+            #             theta=None,
+            #             get_skin=True,
+            #             rotmats=interpolated_rotmats.view(-1, 24, 3, 3))
+            # joints3d_transSeq = joints3dSeq + interpolated_ori_trans.unsqueeze(1).repeat(1, joints3d.shape[1], 1)
+            # joints2dSeq = projection_torch(joints3d_transSeq, cam_intr, H, W)
 
         # joints2dOnImage(joints2dSeq, learnable_pose_and_shape.shape[0], args, action, saved_folder = "/home/ziyan/02_research/EventHPE/event_pose_estimation/tmp_folder")
         # joints2dandFeatOnImage(joints2dSeq, featImgLocs, learnable_pose_and_shape.shape[0], args, action, saved_folder = "/home/ziyan/02_research/EventHPE/event_pose_estimation/tmp_folder")
             
         print('------------------------------------- 3.3. Event-Based Pose Refinement ------------------------------------')
-        for iEpoch in range(args.event_refinement_epochs):
-            total_loss = []
 
-            for iSplit in range(totalSplits):
+        # for iSplit in range(totalSplits):
+        for iSplit in range(0,15):
+            for iEpoch in range(args.event_refinement_epochs):
                 # print('===== Esil =====')
                 loss_sil = torch.tensor(0.0, requires_grad=True)
                 startImg = iSplit * numImgsInSplit
@@ -307,9 +324,9 @@ def train(args):
                 loss_refined.backward()
                 optimizer.step()
                 optimizer.zero_grad()
-                total_loss.append(loss_refined.item())
+                # total_loss.append(loss_refined.item())
 
-                if iSplit % drawImgInterval == 1:
+                if iEpoch % drawImgInterval == 1:
                     if os.path.exists('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit-1)):
                         frame_gray = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
                     colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(closest_events_u.shape[0])}
@@ -321,15 +338,14 @@ def train(args):
                     
 
                     # cv2.imwrite('tmp.jpg', boundaryAndEventOnImg)
-                    writer.add_images('boundary_on_Img' , boundaryAndEventOnImg, iSplit + iEpoch*totalSplits, dataformats='HWC')
-                    writer.add_scalar('refinement_loss', loss_refined.item(), iSplit + iEpoch*totalSplits)
+                    writer.add_images('boundary_on_Img' , boundaryAndEventOnImg, iEpoch + iSplit*args.batch_optimization_epochs, dataformats='HWC')
+                    writer.add_scalar('refinement_loss', loss_refined.item(), iEpoch + iSplit*args.batch_optimization_epochs)
 
-            averLossForEpoch = sum(total_loss) / len(total_loss)
-            print(iEpoch, " aver loss for Etemp & Ecor: ", averLossForEpoch)
+            # averLossForEpoch = sum(total_loss) / len(total_loss)
+            # print(iEpoch, " aver loss for Etemp & Ecor: ", averLossForEpoch)
 
-        torch.save(learnable_pose_and_shape, 'learnable_parameters.pt')
-        mpjpe_result, pampjpe_result = evaluation(args, action, learnable_pose_and_shape, model, cam_intr, device)
-        pdb.set_trace()
+        torch.save(learnable_pose_and_shape, 'learnable_parameters-V2.pt')
+        # mpjpe_result, pampjpe_result = evaluation(args, action, learnable_pose_and_shape, model, cam_intr, device)
 
 
 
@@ -354,13 +370,13 @@ def get_args():
     parser.add_argument('--num_steps', type=int, default=8)
     parser.add_argument('--skip', type=int, default=2)
     parser.add_argument('--img_size', type=int, default=256)
-    parser.add_argument('--batch_optimization_epochs', type=int, default=100)
-    parser.add_argument('--event_refinement_epochs', type=int, default=10)
-    parser.add_argument('--joints3d_loss', type=float, default=0.25)
-    parser.add_argument('--joints2d_loss', type=float, default=0.25)
-    parser.add_argument('--temp_loss', type=float, default=0.1)
-    parser.add_argument('--cor_loss', type=float, default=0.01)
-    parser.add_argument('--stab_loss', type=float, default=1)
+    parser.add_argument('--batch_optimization_epochs', type=int, default=2000)
+    parser.add_argument('--event_refinement_epochs', type=int, default=3)
+    parser.add_argument('--joints3d_loss', type=float, default=0.25) #1
+    parser.add_argument('--joints2d_loss', type=float, default=0.25) #200
+    parser.add_argument('--temp_loss', type=float, default=0.1) #80
+    parser.add_argument('--cor_loss', type=float, default=2) #50
+    parser.add_argument('--stab_loss', type=float, default=1) #5
     parser.add_argument('--sil_loss', type=float, default=1)
     
     parser.add_argument('--lr_start', '-lr', type=float, default=0.001)

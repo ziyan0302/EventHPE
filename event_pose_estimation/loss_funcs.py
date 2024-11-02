@@ -1,8 +1,9 @@
 import torch
 import torch.nn.functional as F
 from event_pose_estimation.SMPL import batch_rodrigues
-from event_pose_estimation.geometry import projection_torch, batch_compute_similarity_transform_torch
-
+from event_pose_estimation.geometry import projection_torch, batch_compute_similarity_transform_torch,\
+                                            batch_compute_similarity_transform_torch_cap
+import pdb
 
 def compute_mpjpe(pred, target):
     # [B, T, 24, 3]
@@ -12,9 +13,19 @@ def compute_mpjpe(pred, target):
 
 def compute_pa_mpjpe(pred, target):
     T, _, _ = pred.size()
+    pdb.set_trace()
+    pred.view(-1, 24, 3).shape
+    target.view(-1, 24, 3).shape
     pred_hat = batch_compute_similarity_transform_torch(pred.view(-1, 24, 3), target.view(-1, 24, 3))
     pa_mpjpe = torch.sqrt(torch.sum((pred_hat - target.view(-1, 24, 3)) ** 2, dim=-1))
     return pa_mpjpe.view(T, 24)
+
+def compute_pa_mpjpe_eventcap(pred, target):
+    T, _, _ = pred.size()
+    pred_hat = batch_compute_similarity_transform_torch_cap(pred.view(-1, 24, 3), target.view(-1, 24, 3))
+    pa_mpjpe = torch.sqrt(torch.sum((pred_hat - target.view(-1, 24, 3)) ** 2, dim=-1))
+    return pa_mpjpe.view(T, 24)
+
 
 
 def compute_pelvis_mpjpe(pred, target):

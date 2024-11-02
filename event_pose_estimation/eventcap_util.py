@@ -5,8 +5,11 @@ from scipy.spatial import KDTree
 import torch
 import cv2
 import numpy as np
-from event_pose_estimation.geometry import projection_torch
+from event_pose_estimation.geometry import projection_torch, rot6d_to_rotmat, delta_rotmat_to_rotmat
 import os
+from event_pose_estimation.loss_funcs import compute_mpjpe, compute_pa_mpjpe, compute_pa_mpjpe_eventcap
+from event_pose_estimation.SMPL import SMPL, batch_rodrigues
+
 
 def findClosestPointTorch(source, target):
     """
@@ -509,3 +512,52 @@ def findImgFeat(gray_img_sequence):
         p0 = good_new.reshape(-1, 1, 2)
         featImgLocs.append(p0.reshape(-1,2))
     return featImgLocs
+
+
+def evaluation(args, action, learnable_pose_and_shape, model, cam_intr, device):
+    mpjpe_list = []
+    pampjpe_list = []
+    joints3DGTForEveryFrame = []
+    joints3DPredForEveryFrame = []
+    for iSplit in range(100):
+        joints2dlist = []
+        joints3dlist = []
+        joints3dHMRlist = []
+        tran_list = []
+        tranHMR_list = []
+        for iImg in range(8):
+            beta, theta, tran, joints3dGT, joints2dGT = \
+            joblib.load('%s/pose_events/%s/pose%04i.pkl' % (args.data_dir, action, iSplit*8 + iImg))
+            joints2DHMR, joints3DHMR, _, transHMR, _ = \
+                joblib.load('%s/hmr_results/%s/fullpic%04i_hmr.pkl' % (args.data_dir, action, iSplit*8 + iImg))
+
+            joints2dlist.append(joints2dGT)
+            joints3dlist.append(joints3dGT)
+            tran_list.append(tran)
+            tranHMR_list.append(transHMR)
+            joints3dHMRlist.append(joints3DHMR)
+        joints2dGTInSplit = torch.from_numpy(np.array(joints2dlist)).unsqueeze(0)
+        joints3dGTInSplit = torch.from_numpy(np.array(joints3dlist)).unsqueeze(0).to(device)
+        trans3dGTInSplit = torch.from_numpy(np.array(tran_list)).to(device)
+        trans3dHMRInSplit = torch.from_numpy(np.array(tranHMR_list)).to(device)
+        joints3dHMRInSplit = torch.from_numpy(np.array(joints3dHMRlist)).to(device)
+        learnable_pose_and_shape[iSplit*8:(iSplit+1)*8]
+        interpolated_rotmats = batch_rodrigues(learnable_pose_and_shape[iSplit*8:(iSplit+1)*8, 3:75].reshape(-1, 3)).view(-1, 24, 3, 3)  # [B, 24, 3, 3]
+        interpolated_rotmats.shape
+        verts, joints3d, _ = model(beta=learnable_pose_and_shape[iSplit*8:(iSplit+1)*8,75:85].view(-1, 10),
+                            theta=None,
+                            get_skin=True,
+                            rotmats=interpolated_rotmats.view(-1, 24, 3, 3))
+        verts = verts + trans3dHMRInSplit.repeat(1, verts.shape[1], 1)
+        H, W = args.img_size, args.img_size
+        joints3d_trans = joints3d + trans3dHMRInSplit.repeat(1, joints3d.shape[1], 1)
+        joints2d = projection_torch(joints3d_trans, cam_intr, H, W)
+        mpjpe = torch.mean(compute_mpjpe(joints3d_trans, joints3dGTInSplit),dim=2)  # [1, T, 24]
+        pa_mpjpe = torch.mean(compute_pa_mpjpe_eventcap(joints3d_trans, joints3dGTInSplit), dim=1)  # [T, 24]
+        mpjpe_list.append(mpjpe[0])
+        pampjpe_list.append(pa_mpjpe)
+        joints3DGTForEveryFrame.append(joints3dGTInSplit[0])
+        joints3DPredForEveryFrame.append(joints3d)
+
+    return torch.hstack(mpjpe_list), torch.hstack(pampjpe_list), \
+        torch.stack(joints3DGTForEveryFrame), torch.stack(joints3DPredForEveryFrame)
