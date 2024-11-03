@@ -9,7 +9,97 @@ from event_pose_estimation.geometry import projection_torch, rot6d_to_rotmat, de
 import os
 from event_pose_estimation.loss_funcs import compute_mpjpe, compute_pa_mpjpe, compute_pa_mpjpe_eventcap
 from event_pose_estimation.SMPL import SMPL, batch_rodrigues
+import torch.nn.functional as F
 
+
+
+# Function to create the silhouette from vertices
+def vertices_to_silhouette(vertices, H=256, W=256, device='cpu'):
+    """
+    Create a silhouette image from vertices while retaining gradients.
+    Args:
+    - vertices (torch.Tensor): Tensor of shape (N, 2) representing x, y coordinates.
+    - H (int): Height of the image.
+    - W (int): Width of the image.
+    - device (str): Device for computation, 'cpu' or 'cuda'.
+    Returns:
+    - silhouette (torch.Tensor): Tensor of shape (1, 1, H, W) representing the silhouette.
+    """
+    vertPixels = vertices.to(torch.int64)  # Convert to int64 for indexing compatibility in PyTorch
+    
+    # Define structuring elements (kernels) for dilation
+    kernel5x5 = torch.tensor([
+        [0, 1, 1, 1, 0],
+        [1, 1, 1, 1, 1],
+        [1, 1, 1, 1, 1],
+        [1, 1, 1, 1, 1],
+        [0, 1, 1, 1, 0]
+    ], dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)  # Shape (1, 1, 5, 5)
+
+    kernel3x3 = torch.tensor([
+        [0, 1, 0],
+        [1, 1, 1],
+        [0, 1, 0]
+    ], dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)  # Shape (1, 1, 3, 3)
+    # Initialize a mask of zeros
+    mask = torch.zeros((1, 1, H, H), dtype=torch.float32, device=device)
+    mask[0, 0, vertPixels[:, 1], vertPixels[:, 0]] = 1.0
+
+    # Dilate the mask with 5x5 and 3x3 kernels
+    mask5x5 = F.conv2d(mask, kernel5x5, padding=2).clamp(0, 1)
+    mask3x3 = F.conv2d(mask, kernel3x3, padding=1).clamp(0, 1)
+    
+    # Create images with "dilated" boundaries
+    image5x5 = (mask5x5 * 255).squeeze().to(torch.uint8)
+    image3x3 = (mask3x3 * 255).squeeze().to(torch.uint8)
+    
+    # Find boundary by subtracting the two images
+    edge = image5x5 - image3x3
+    non_zero_locations = torch.nonzero(edge != 0, as_tuple=False)
+    x_coords, y_coords = vertices[:,0], vertices[:,1]
+    
+    # Create a mask for vertex indices
+    mask_with_indices = -torch.ones((H, W), dtype=torch.int32, device=device)  # Initialize with -1
+    valid_mask = (0 <= x_coords) & (x_coords < W) & (0 <= y_coords) & (y_coords < H)
+    
+    # collect vertices if one of its neighbors is a effective boundary edge
+    
+    ## right neighbor
+    right_neighbor = vertices.clone()
+    right_neighbor[:,0] = torch.clamp(x_coords + 2, 0, W - 1)
+    right_edge_mask = edge[right_neighbor[:,1].to(torch.long), right_neighbor[:,0].to(torch.long)] != 0
+    
+    ## left neighbor
+    left_neighbor = vertices.clone()
+    left_neighbor[:,0] = torch.clamp(x_coords - 2, 0, W - 1)
+    left_edge_mask = edge[left_neighbor[:,1].to(torch.long), left_neighbor[:,0].to(torch.long)] != 0
+
+    ## above neighbor
+    above_neighbor = vertices.clone()
+    above_neighbor[:,1] = torch.clamp(y_coords - 2, 0, H - 1)
+    above_edge_mask = edge[above_neighbor[:,1].to(torch.long), above_neighbor[:,0].to(torch.long)] != 0
+
+    ## below neighbor
+    below_neighbor = vertices.clone()
+    below_neighbor[:,1] = torch.clamp(y_coords + 2, 0, H - 1)
+    below_edge_mask = edge[below_neighbor[:,1].to(torch.long), below_neighbor[:,0].to(torch.long)] != 0
+    
+    valid_edge_mask = right_edge_mask | left_edge_mask | above_edge_mask | below_edge_mask    
+    
+    
+    vertices = vertices[valid_edge_mask]
+
+    if (0):
+        npmask = np.zeros((256,256))
+        edgetmp = edge.clone()
+        edgetmp1 = edge.clone().detach().cpu().numpy()/2
+        # tmp2 = vertices[valid_edge_mask].detach().cpu().numpy().astype(np.uint8)
+        tmp2 = vertices[valid_edge_mask].detach().cpu().numpy().astype(np.uint8)
+        edgetmp1[tmp2[:,1], tmp2[:,0]] = [255]
+        cv2.imwrite("random_tmp.jpg", edgetmp1)
+
+
+    return vertices
 
 def findClosestPointTorch(source, target):
     """
@@ -57,7 +147,7 @@ def find_closest_events(boundary_pixels, event_u, event_t, t_f, t_0, t_N, lambda
     filtered_events_u = event_u[valid_indices]
     filtered_event_ts = event_t[valid_indices]
     # duplicate
-    boundary_pixels = boundary_pixels[:,[1,0]]
+    # boundary_pixels = boundary_pixels[:,[1,0]]
     # Expand the dimensions of boundary_pixels and events_xy for broadcasting
     boundary_pixels_expanded = boundary_pixels[:, np.newaxis, :].astype(np.int64)  # Shape (m, 1, 2)
     events_xy_expanded = filtered_events_u[np.newaxis, :, :].astype(np.int64)  # Shape (1, n, 2)
@@ -81,28 +171,130 @@ def find_closest_events(boundary_pixels, event_u, event_t, t_f, t_0, t_N, lambda
 
     return closest_events_u, closest_events_t
 
+def find_closest_events_torch(boundary_pixels, event_u, event_t, t_f, t_0, t_N, lambda_val, device='cpu'):
+    # Define the time window [t_f - 10000, t_f + 10000]
+    time_range = 5000
+    start_time = max(t_f - time_range, event_t[0].item())
+    end_time = min(t_f + time_range, event_t[-1].item())
+
+    # Find the indices of the events that fall within the time range
+    valid_indices = (event_t >= start_time) & (event_t <= end_time)
+    
+    # Filter the events and timestamps based on valid_indices
+    filtered_events_u = event_u[valid_indices].astype(np.int32)
+    filtered_event_ts = event_t[valid_indices].astype(np.int32)
+
+    if (0): # spend too much time
+        # Expand the dimensions for broadcasting
+        boundary_pixels_expanded = boundary_pixels[:, None, :].to(torch.int64).to(device)  # Shape (m, 1, 2)
+        events_xy_expanded = torch.from_numpy(filtered_events_u)[None, :, :].to(torch.int64).to(device)      # Shape (1, n, 2)
+        
+        # Compute spatial distances (squared Euclidean distance)
+        spatial_distances_1 = torch.sum((boundary_pixels_expanded - events_xy_expanded) ** 2, dim=-1)  # Shape: (m, n)
+
+    tmp_events_xy = torch.from_numpy(filtered_events_u).to(torch.int64).to(device)
+    tmp_boundary_pixels = boundary_pixels.to(torch.int64).to(device)
+    boundary_pixels_norm = (tmp_boundary_pixels ** 2).sum(dim=1, keepdim=True)  # Shape (m, 1)
+    events_xy_norm = (tmp_events_xy ** 2).sum(dim=1, keepdim=True).T            # Shape (1, n)
+    spatial_distances = boundary_pixels_norm + events_xy_norm - 2 * torch.mm(tmp_boundary_pixels, tmp_events_xy.T)
+
+    # Compute temporal distances: normalized temporal differences
+    temporal_distances = (t_f - filtered_event_ts) / (t_N - t_0)  # Shape: (n,)
+    
+    # Reshape temporal_distances for broadcasting
+    temporal_distances = torch.from_numpy(temporal_distances).unsqueeze(0)  # Shape: (1, n)
+    
+    # Compute total distance D(s_b, e) = λ * (temporal_dist)^2 + spatial_dist
+    total_distances = lambda_val * (temporal_distances ** 2) + spatial_distances  # Shape: (m, n)
+    
+    # Find the event index that minimizes the distance for each boundary pixel
+    closest_event_indices = torch.argmin(total_distances, dim=1)
+    
+    # Get the closest events by indexing into event arrays
+    closest_events_u = filtered_events_u[closest_event_indices]
+    closest_events_t = filtered_event_ts[closest_event_indices]
+    
+    return closest_events_u, closest_events_t
+
 def findBoundaryPixels(vertPixels, H=256):
     boundaryPixels = []
     vertPixels = vertPixels.astype(np.int8)
     for iImg in range(vertPixels.shape[0]):
         mask = np.zeros((H, H), dtype=np.uint8)
-        mask[vertPixels[iImg,:,1], vertPixels[iImg,:,0]] = 255
+        mask[vertPixels[iImg,:,0], vertPixels[iImg,:,1]] = 255
         # Dilate the mask to create circles
-        kernel7x7 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        mask7x7 = cv2.dilate(mask, kernel7x7)
-        kernel5x5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        mask5x5 = cv2.dilate(mask, kernel5x5)
-        image7x7 = np.full((H, H), 0, dtype=np.uint8)  # Grey background
-        image5x5 = np.full((H, H), 0, dtype=np.uint8)  # Grey background
-        # Apply the mask to the image
-        # image7x7[mask7x7 == 255] += np.array([0, 127, 127]).astype(np.uint8)  # White dots
-        # image5x5[mask5x5 == 255] += np.array([127, 127, 127]).astype(np.uint8)  # White dots
-        image7x7[mask7x7 == 255] += np.array([255]).astype(np.uint8)
-        image5x5[mask5x5 == 255] += np.array([255]).astype(np.uint8)
-        edge = image7x7 - image5x5
+        if (0): # more strict boundary check
+            kernel7x7 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+            mask7x7 = cv2.dilate(mask, kernel7x7)
+            kernel5x5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            mask5x5 = cv2.dilate(mask, kernel5x5)
+            image7x7 = np.full((H, H), 0, dtype=np.uint8)  # Grey background
+            image5x5 = np.full((H, H), 0, dtype=np.uint8)  # Grey background
+            # Apply the mask to the image
+            image7x7[mask7x7 == 255] += np.array([255]).astype(np.uint8)
+            image5x5[mask5x5 == 255] += np.array([255]).astype(np.uint8)
+            edge = image7x7 - image5x5
+        if (1): # looser boundary check
+            kernel5x5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            mask5x5 = cv2.dilate(mask, kernel5x5)
+            kernel3x3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            mask3x3 = cv2.dilate(mask, kernel3x3)
+            image5x5 = np.full((H, H), 0, dtype=np.uint8)  # Grey background
+            image3x3 = np.full((H, H), 0, dtype=np.uint8)  # Grey background
+            # Apply the mask to the image
+            image5x5[mask5x5 == 255] += np.array([255]).astype(np.uint8)
+            image3x3[mask3x3 == 255] += np.array([255]).astype(np.uint8)
+            edge = image5x5 - image3x3
+
         non_zero_locations = np.nonzero(edge != 0)
         non_zeros = np.array(list(zip(non_zero_locations[0], non_zero_locations[1])))
         boundaryPixels.append(non_zeros)
+    return boundaryPixels
+
+def findBoundaryPixels_torch(vertPixels, H=256, device='cpu'):
+    boundaryPixels = []
+    vertPixels = vertPixels.to(torch.int64)  # Convert to int64 for indexing compatibility in PyTorch
+    
+    # Define structuring elements (kernels) for dilation
+    kernel5x5 = torch.tensor([
+        [0, 1, 1, 1, 0],
+        [1, 1, 1, 1, 1],
+        [1, 1, 1, 1, 1],
+        [1, 1, 1, 1, 1],
+        [0, 1, 1, 1, 0]
+    ], dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)  # Shape (1, 1, 5, 5)
+
+    kernel3x3 = torch.tensor([
+        [0, 1, 0],
+        [1, 1, 1],
+        [0, 1, 0]
+    ], dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)  # Shape (1, 1, 3, 3)
+    
+    for iImg in range(vertPixels.shape[0]):
+        # Initialize a mask of zeros
+        mask = torch.zeros((1, 1, H, H), dtype=torch.float32, device=device)
+        mask[0, 0, vertPixels[iImg, :, 1], vertPixels[iImg, :, 0]] = 1.0
+
+        # Dilate the mask with 5x5 and 3x3 kernels
+        mask5x5 = F.conv2d(mask, kernel5x5, padding=2).clamp(0, 1)
+        mask3x3 = F.conv2d(mask, kernel3x3, padding=1).clamp(0, 1)
+        
+        # Create images with "dilated" boundaries
+        image5x5 = (mask5x5 * 255).squeeze().to(torch.uint8)
+        image3x3 = (mask3x3 * 255).squeeze().to(torch.uint8)
+        
+        # Find boundary by subtracting the two images
+        edge = image5x5 - image3x3
+        non_zero_locations = torch.nonzero(edge != 0, as_tuple=False)
+        if (0):
+            pdb.set_trace()
+            npmask = np.zeros((256,256))
+            x = non_zero_locations[:,1].detach().cpu().numpy()
+            y = non_zero_locations[:,0].detach().cpu().numpy()
+            npmask[y, x] = [255]
+            cv2.imwrite("tmp.jpg", npmask)
+        boundaryPixels.append(non_zero_locations)  # Convert to numpy if needed
+        
     return boundaryPixels
 
 class ICPPoseEstimation:
@@ -333,8 +525,10 @@ def draw_skeleton(input_image, joints, draw_edges=True, vis=None, radius=None):
         'white': [255, 255, 255],  #        
     }
 
-    # image = input_image.copy()
-    image = cv2.cvtColor(input_image, cv2.COLOR_GRAY2BGR)
+    if len(input_image.shape) == 3:
+        image = input_image.copy()
+    else:
+        image = cv2.cvtColor(input_image, cv2.COLOR_GRAY2BGR)
 
     input_is_float = False
 

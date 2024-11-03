@@ -42,8 +42,9 @@ def test(args):
     H, W = args.img_size, args.img_size
 
     joints2DHMR_list, joints3DHMR_list, transHMR_list = [], [], []
+    paramsHMR_list = []
     for iImg in range(800):
-        joints2DHMR, joints3DHMR, _, transHMR, _ = \
+        joints2DHMR, joints3DHMR, paramsHMR, transHMR, _ = \
                 joblib.load('%s/hmr_results/%s/fullpic%04i_hmr.pkl' % (args.data_dir, action, iImg))
         if iImg == 0:
             tmpJoints2DHMR = joints2DHMR
@@ -52,10 +53,11 @@ def test(args):
         joints2DHMR_list.append(joints2DHMR)
         joints3DHMR_list.append(joints3DHMR+np.tile(transHMR,(joints3DHMR.shape[0],1)))
         transHMR_list.append(transHMR)
+        paramsHMR_list.append(paramsHMR)
     joints2DHMRForEveryFrame = torch.from_numpy(np.stack(joints2DHMR_list)).to(device)
     joints3DHMRForEveryFrame = torch.from_numpy(np.stack(joints3DHMR_list)).to(device)
     transHMRForEveryFrame = torch.from_numpy(np.stack(transHMR_list)).to(device)
-
+    paramsHMRForEveryFrame = torch.from_numpy(np.stack(paramsHMR_list)).to(device)
     # Convert grayscale image to BGR format for color drawing
     grey_img = cv2.imread('/home/ziyan/02_research/EventHPE/data_event/data_event_out/full_pic_256/subject03_group1_time1/fullpic0000.jpg', cv2.IMREAD_GRAYSCALE).astype(np.uint8)
     output_image = cv2.cvtColor(grey_img, cv2.COLOR_GRAY2BGR)
@@ -89,6 +91,9 @@ def test(args):
     learnable_pose_and_shape = torch.load('learnable_parameters-V2.pt')
     mpjpe_result, pampjpe_result, joints3DGTForEveryFrame, joints3DPredForEveryFrame = \
         evaluation(args, action, learnable_pose_and_shape, model, cam_intr, device)
+    # mpjpe_result, pampjpe_result, joints3DGTForEveryFrame, joints3DPredForEveryFrame = \
+    #     evaluation(args, action, paramsHMRForEveryFrame, model, cam_intr, device)
+
     # joints3DPredForqEveryFrame = joints3DPredForEveryFrame + transHMRForEveryFrame
 
     joints3DGTForEveryFrame.shape
@@ -106,8 +111,8 @@ def test(args):
     pelvis_mpjpeHMR_list = []
     pckh05HMR_list = []
     
-    startWindow = 0
-    endWindow = 15
+    startWindow = 6
+    endWindow = 7
     for iImg in range(startWindow, endWindow):
         joints3DGTIn1Split = joints3DGTForEveryFrame[iImg]
         joints3DPredIn1Split = joints3DPredForEveryFrame[iImg]

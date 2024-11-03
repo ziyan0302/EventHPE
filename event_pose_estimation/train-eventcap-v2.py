@@ -19,11 +19,14 @@ import pickle
 # from scipy.spatial import KDTree
 from eventcap_util import findCloestPoint, findClosestPointTorch, \
     find_closest_events, findBoundaryPixels, joints2dOnImage, \
-    joints2dandFeatOnImage, draw_feature_dots, draw_skeleton, findImgFeat, evaluation
+    joints2dandFeatOnImage, draw_feature_dots, draw_skeleton, findImgFeat, \
+    evaluation, findBoundaryPixels_torch, find_closest_events_torch, \
+    vertices_to_silhouette
 from event_pose_estimation.geometry import projection_torch, rot6d_to_rotmat, delta_rotmat_to_rotmat
 from event_pose_estimation.loss_funcs import compute_mpjpe, compute_pa_mpjpe, compute_pa_mpjpe_eventcap
 import h5py
 import random
+import matplotlib.pyplot as plt
 
 # import event_pose_estimation.utils as util
 
@@ -184,19 +187,18 @@ def train(args):
         # set optimizer
         optimizer = torch.optim.SGD(learnable_params, lr=args.lr_start, momentum=0)
         # optimizer = torch.optim.Adam(learnable_params, lr=args.lr_start)
-        for iSplit in range(0,15):
+        for iSplit in range(6,7):
 
             for iEpoch in range(args.batch_optimization_epochs):
                 startImg = iSplit * numImgsInSplit
 
                 # verts would participate in Ecor 
                 # joints2d would participate in Etemp                
-                interpolated_rotmats = batch_rodrigues(learnable_pose_and_shape[startImg:(startImg+numImgsInSplit), 3:75].reshape(-1, 3)).view(-1, 24, 3, 3)  # [B, 24, 3, 3]
-                interpolated_rotmats.shape
+                rotmats = batch_rodrigues(learnable_pose_and_shape[startImg:(startImg+numImgsInSplit), 3:75].reshape(-1, 3)).view(-1, 24, 3, 3)  # [B, 24, 3, 3]
                 verts, joints3d, _ = model(beta=learnable_pose_and_shape[startImg:(startImg+numImgsInSplit),75:85].view(-1, 10),
                                     theta=None,
                                     get_skin=True,
-                                    rotmats=interpolated_rotmats.view(-1, 24, 3, 3))
+                                    rotmats=rotmats.view(-1, 24, 3, 3))
                 verts = verts + interpolated_ori_trans[startImg:(startImg+numImgsInSplit)].unsqueeze(1).repeat(1, verts.shape[1], 1)
                 joints3d_trans = joints3d + interpolated_ori_trans[startImg:(startImg+numImgsInSplit)].unsqueeze(1).repeat(1, joints3d.shape[1], 1)
                 joints2d = projection_torch(joints3d_trans, cam_intr, H, W)
@@ -239,7 +241,7 @@ def train(args):
                 # lossFor1Seq = args.cor_loss*loss_cor + args.temp_loss*loss_temp + args.joints2d_loss*loss_2D + args.joints3d_loss*loss_3D
                 lossFor1Seq = args.cor_loss*loss_cor + args.joints2d_loss*loss_2D + args.joints3d_loss*loss_3D
                 
-                if iEpoch % drawImgInterval == 1:
+                if iEpoch % drawImgInterval == 0:
                     colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(len(p0))}
                     min_distances = min_distances.cpu().detach().numpy()
                     frame_gray = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit-1), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
@@ -251,8 +253,31 @@ def train(args):
                     
                     skeletonOnImg = draw_skeleton(frame_gray, jointsForVisual, draw_edges=True)
 
+
+                    fig, axs = plt.subplots(1,8,figsize=(20,3))
+                    for iImg in range(0, numImgsInSplit):
+                        if os.path.exists('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+iImg)):
+                            frame_gray = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+iImg), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
+                        else:
+                            print('next image doesnt exist')
+                        jointsForVisual = joints2d[iImg].detach().cpu().numpy() * 256
+                        jointsForVisual = jointsForVisual.astype(np.uint8)
+                        skeletonOnImg = draw_skeleton(frame_gray, jointsForVisual, draw_edges=True)
+                        axs[iImg].imshow(skeletonOnImg)
+                    fig.canvas.draw()
+                    # Convert the canvas to a raw RGB buffer
+                    buf = fig.canvas.tostring_rgb()
+                    ncols, nrows = fig.canvas.get_width_height()
+
+
+                    image = np.frombuffer(buf, dtype=np.uint8).reshape(nrows, ncols, 3)
+                    # writer.add_images('feat and closest vertics' , featAndVertOnImg, iEpoch*sequence_length + startImg, dataformats='HWC')
+                    # writer.add_images('skeleton' , image, iEpoch*sequence_length + startImg, dataformats='HWC')
+                    # writer.add_scalar('training_loss', lossFor1Seq.item(), iEpoch*sequence_length + startImg)
+
                     writer.add_images('feat and closest vertics' , featAndVertOnImg, iEpoch + iSplit*args.batch_optimization_epochs, dataformats='HWC')
                     writer.add_images('skeleton' , skeletonOnImg, iEpoch + iSplit*args.batch_optimization_epochs, dataformats='HWC')
+                    writer.add_images('skeleton in the whole seq' , image, iEpoch + iSplit*args.batch_optimization_epochs, dataformats='HWC')
                     writer.add_scalar('training_loss', lossFor1Seq.item(), iEpoch + iSplit*args.batch_optimization_epochs)
                     writer.add_scalar('loss2D', loss_2D.item(), iEpoch + iSplit*args.batch_optimization_epochs)
                     writer.add_scalar('loss3D', loss_3D.item(), iEpoch + iSplit*args.batch_optimization_epochs)
@@ -287,9 +312,11 @@ def train(args):
             
         print('------------------------------------- 3.3. Event-Based Pose Refinement ------------------------------------')
 
+        optimizer = torch.optim.SGD(learnable_params, lr=args.lr_start*5, momentum=0)
         # for iSplit in range(totalSplits):
-        for iSplit in range(0,15):
+        for iSplit in range(6,7):
             for iEpoch in range(args.event_refinement_epochs):
+                print(f"{iEpoch} event_refinement for {iSplit} ")
                 # print('===== Esil =====')
                 loss_sil = torch.tensor(0.0, requires_grad=True)
                 startImg = iSplit * numImgsInSplit
@@ -306,26 +333,52 @@ def train(args):
                 # verts2d_pix = (verts2d*H).type(torch.uint8).detach().cpu().numpy()
                 verts2d_pix = (verts2d*H).detach().cpu().numpy() 
 
+                verts2dOnSil = vertices_to_silhouette(verts2d, H, W, device)
+
                 boundaryPixelsinSeq = findBoundaryPixels(verts2d_pix, 256) # len = 8
-                # closest_events_u, closest_events_t = find_closest_events(boundaryPixelsinSeq[1], events_xy, events_ts, image_raw_event_ts[1], image_raw_event_ts[0], image_raw_event_ts[7], 0.5)
+                boundaryPixelsinSeq_torch = findBoundaryPixels_torch(verts2d*H, H, device)
+                closest_events_u, closest_events_t = find_closest_events(boundaryPixelsinSeq[1], events_xy, events_ts, image_raw_event_ts[1], image_raw_event_ts[0], image_raw_event_ts[7], 0.5)
                 for iImg in range(numImgsInSplit):
                     closest_events_u, closest_events_t = find_closest_events(boundaryPixelsinSeq[iImg], events_xy, events_ts, image_raw_event_ts[startImg+iImg], image_raw_event_ts[startImg], image_raw_event_ts[startImg+numImgsInSplit], 0.5)
-                    distanceToClosestEvents = torch.norm(torch.tensor((boundaryPixelsinSeq[iImg] - closest_events_u)/H).to(torch.float16), dim = 1).to(device)
+                    closest_events_u_torch, closest_events_t_torch = find_closest_events_torch(boundaryPixelsinSeq_torch[iImg],\
+                                            events_xy, events_ts, image_raw_event_ts[startImg+iImg], image_raw_event_ts[startImg], \
+                                            image_raw_event_ts[startImg+numImgsInSplit], 0.5)
+                    if (0):
+                        pdb.set_trace()
+                        npmask = np.zeros((256,256))
+                        x = closest_events_u_torch[:,1]
+                        y = closest_events_u_torch[:,0]
+                        npmask[y, x] = [255]
+                        cv2.imwrite("tmp.jpg", npmask)
+
+                    
+                    # distanceToClosestEvents = torch.norm(torch.tensor((boundaryPixelsinSeq[iImg] - closest_events_u)/H).to(torch.float16), dim = 1).to(device)
+                    closest_events_u_torch = torch.from_numpy(closest_events_u_torch).to(torch.int64).to(device)
+                    distanceToClosestEvents = torch.norm((boundaryPixelsinSeq_torch[iImg] - closest_events_u_torch)/H, dim = 1)
+                    pdb.set_trace()
+                    
+                    loss_sil = loss_sil + torch.sum(torch.norm(verts2d[0].to(torch.float64),dim=1))
+                    loss_sil = loss_sil + torch.sum(torch.norm(boundaryPixelsinSeq_torch[0].to(torch.float64),dim=1))
+                    torch.sum(torch.norm(boundaryPixelsinSeq_torch[0] - torch.ones_like(boundaryPixelsinSeq_torch[0]),dim=1))
                     loss_sil = loss_sil + torch.sum((distanceToClosestEvents)**2)
                 
                 # print('===== Estab =====')
                 loss_stab = torch.sum(torch.norm(joints2d - init_joints2d[startImg:(startImg+numImgsInSplit)], dim=2)**2)
                 joints2d.shape
                 init_joints2d[startImg:(startImg+numImgsInSplit)].shape
-                loss_refined = args.sil_loss*loss_sil + args.stab_loss*loss_stab
+                # loss_refined = args.sil_loss*loss_sil + args.stab_loss*loss_stab
+                loss_refined = args.sil_loss*loss_sil 
 
                 # loss_refined = loss_sil
                 loss_refined.backward()
                 optimizer.step()
                 optimizer.zero_grad()
+                pdb.set_trace()
+                learnable_params[0].grad
+                learnable_params[0].grad.max()
                 # total_loss.append(loss_refined.item())
 
-                if iEpoch % drawImgInterval == 1:
+                if iEpoch % int(drawImgInterval/10) == 1:
                     if os.path.exists('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit-1)):
                         frame_gray = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
                     colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(closest_events_u.shape[0])}
@@ -334,7 +387,10 @@ def train(args):
                     #                                         [x for x in range(closest_events_u.shape[0])], colors)
                     boundaryAndEventOnImg = draw_feature_dots(frame_gray, boundaryPixelsinSeq[-1][:,[1,0]], closest_events_u, [x for x in range(closest_events_u.shape[0])], colors)
                     # boundaryAndEventOnImg = draw_feature_dots(frame_gray, boundaryPixelsinSeq[-1], closest_events_u, [x for x in range(closest_events_u.shape[0])], colors)
+                    jointsForVisual = joints2d[-1].detach().cpu().numpy() * 256
+                    jointsForVisual = jointsForVisual.astype(np.uint8)
                     
+                    skeletonOnImg = draw_skeleton(boundaryAndEventOnImg, jointsForVisual, draw_edges=True)
 
                     # cv2.imwrite('tmp.jpg', boundaryAndEventOnImg)
                     writer.add_images('boundary_on_Img' , boundaryAndEventOnImg, iEpoch + iSplit*args.batch_optimization_epochs, dataformats='HWC')
@@ -371,8 +427,8 @@ def get_args():
     parser.add_argument('--skip', type=int, default=2)
     parser.add_argument('--img_size', type=int, default=256)
     parser.add_argument('--batch_optimization_epochs', type=int, default=2000)
-    parser.add_argument('--event_refinement_epochs', type=int, default=3)
-    parser.add_argument('--joints3d_loss', type=float, default=0.25) #1
+    parser.add_argument('--event_refinement_epochs', type=int, default=20)
+    parser.add_argument('--joints3d_loss', type=float, default=25) #1
     parser.add_argument('--joints2d_loss', type=float, default=0.25) #200
     parser.add_argument('--temp_loss', type=float, default=0.1) #80
     parser.add_argument('--cor_loss', type=float, default=50) #50
