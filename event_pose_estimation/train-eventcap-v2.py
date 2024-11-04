@@ -187,7 +187,7 @@ def train(args):
         # set optimizer
         optimizer = torch.optim.SGD(learnable_params, lr=args.lr_start, momentum=0)
         # optimizer = torch.optim.Adam(learnable_params, lr=args.lr_start)
-        for iSplit in range(6,7):
+        for iSplit in range(20,70):
 
             for iEpoch in range(args.batch_optimization_epochs):
                 startImg = iSplit * numImgsInSplit
@@ -296,7 +296,7 @@ def train(args):
             #     pdb.set_trace()
 
             # averLossForEpoch = sum(total_loss) / len(total_loss)
-                if iEpoch % drawImgInterval == 0:
+                if iEpoch % (drawImgInterval*5) == 0:
                     print(iEpoch, f" aver loss for {iSplit}: {lossFor1Seq.item():.3f}")
             
             # interpolated_rotmats = batch_rodrigues(learnable_pose_and_shape[:, 3:75].reshape(-1, 3)).view(-1, 24, 3, 3)  # [B, 24, 3, 3]
@@ -312,11 +312,12 @@ def train(args):
             
         print('------------------------------------- 3.3. Event-Based Pose Refinement ------------------------------------')
 
-        optimizer = torch.optim.SGD(learnable_params, lr=args.lr_start*5, momentum=0)
+        optimizer = torch.optim.SGD(learnable_params, lr=args.lr_event, momentum=0)
         # for iSplit in range(totalSplits):
-        for iSplit in range(6,7):
+        for iSplit in range(20,70):
             for iEpoch in range(args.event_refinement_epochs):
-                print(f"{iEpoch} event_refinement for {iSplit} ")
+                if (iEpoch % 25 == 24):
+                    print(f"{iEpoch} event_refinement for {iSplit} ")
                 # print('===== Esil =====')
                 loss_sil = torch.tensor(0.0, requires_grad=True)
                 startImg = iSplit * numImgsInSplit
@@ -333,59 +334,65 @@ def train(args):
                 # verts2d_pix = (verts2d*H).type(torch.uint8).detach().cpu().numpy()
                 verts2d_pix = (verts2d*H).detach().cpu().numpy() 
 
-                verts2dOnSil = vertices_to_silhouette(verts2d, H, W, device)
 
-                boundaryPixelsinSeq = findBoundaryPixels(verts2d_pix, 256) # len = 8
-                boundaryPixelsinSeq_torch = findBoundaryPixels_torch(verts2d*H, H, device)
-                closest_events_u, closest_events_t = find_closest_events(boundaryPixelsinSeq[1], events_xy, events_ts, image_raw_event_ts[1], image_raw_event_ts[0], image_raw_event_ts[7], 0.5)
+                # boundaryPixelsinSeq = findBoundaryPixels(verts2d_pix, 256) # len = 8
+                # boundaryPixelsinSeq_torch = findBoundaryPixels_torch(verts2d*H, H, device)
+                # closest_events_u, closest_events_t = find_closest_events(boundaryPixelsinSeq[1], events_xy, events_ts, image_raw_event_ts[1], image_raw_event_ts[0], image_raw_event_ts[7], 0.5)
                 for iImg in range(numImgsInSplit):
-                    closest_events_u, closest_events_t = find_closest_events(boundaryPixelsinSeq[iImg], events_xy, events_ts, image_raw_event_ts[startImg+iImg], image_raw_event_ts[startImg], image_raw_event_ts[startImg+numImgsInSplit], 0.5)
-                    closest_events_u_torch, closest_events_t_torch = find_closest_events_torch(boundaryPixelsinSeq_torch[iImg],\
+                    verts2dOnSil = vertices_to_silhouette(verts2d[iImg]*H, H, W, device)
+                    # closest_events_u, closest_events_t = find_closest_events(boundaryPixelsinSeq[iImg], events_xy, events_ts, image_raw_event_ts[startImg+iImg], image_raw_event_ts[startImg], image_raw_event_ts[startImg+numImgsInSplit], 0.5)
+                    # closest_events_u_torch, closest_events_t_torch = find_closest_events_torch(boundaryPixelsinSeq_torch[iImg],\
+                    #                         events_xy, events_ts, image_raw_event_ts[startImg+iImg], image_raw_event_ts[startImg], \
+                    #                         image_raw_event_ts[startImg+numImgsInSplit], 0.5)
+                    closest_events_u_torch, closest_events_t_torch = find_closest_events_torch(verts2dOnSil,\
                                             events_xy, events_ts, image_raw_event_ts[startImg+iImg], image_raw_event_ts[startImg], \
-                                            image_raw_event_ts[startImg+numImgsInSplit], 0.5)
+                                            image_raw_event_ts[startImg+numImgsInSplit], 0.5, device)
                     if (0):
-                        pdb.set_trace()
                         npmask = np.zeros((256,256))
-                        x = closest_events_u_torch[:,1]
-                        y = closest_events_u_torch[:,0]
+                        x = verts2dOnSil[:,0].clone().detach().cpu().numpy().astype(np.uint8)
+                        y = verts2dOnSil[:,1].clone().detach().cpu().numpy().astype(np.uint8)
                         npmask[y, x] = [255]
                         cv2.imwrite("tmp.jpg", npmask)
 
                     
                     # distanceToClosestEvents = torch.norm(torch.tensor((boundaryPixelsinSeq[iImg] - closest_events_u)/H).to(torch.float16), dim = 1).to(device)
-                    closest_events_u_torch = torch.from_numpy(closest_events_u_torch).to(torch.int64).to(device)
-                    distanceToClosestEvents = torch.norm((boundaryPixelsinSeq_torch[iImg] - closest_events_u_torch)/H, dim = 1)
-                    pdb.set_trace()
+                    # closest_events_u_torch = torch.from_numpy(closest_events_u_torch).to(torch.int64).to(device)
+                    distanceToClosestEvents = torch.norm((verts2dOnSil - closest_events_u_torch)/H, dim = 1)
                     
-                    loss_sil = loss_sil + torch.sum(torch.norm(verts2d[0].to(torch.float64),dim=1))
-                    loss_sil = loss_sil + torch.sum(torch.norm(boundaryPixelsinSeq_torch[0].to(torch.float64),dim=1))
-                    torch.sum(torch.norm(boundaryPixelsinSeq_torch[0] - torch.ones_like(boundaryPixelsinSeq_torch[0]),dim=1))
-                    loss_sil = loss_sil + torch.sum((distanceToClosestEvents)**2)
+                    # loss_sil = loss_sil + torch.sum(torch.norm(boundaryPixelsinSeq_torch[0].to(torch.float64),dim=1))
+                    # torch.sum(torch.norm(boundaryPixelsinSeq_torch[0] - torch.ones_like(boundaryPixelsinSeq_torch[0]),dim=1))
+                    # loss_sil = loss_sil + torch.mean((distanceToClosestEvents)**2)
+                    loss_sil = loss_sil + torch.mean((distanceToClosestEvents)) # try sum ( ^2)
                 
                 # print('===== Estab =====')
                 loss_stab = torch.sum(torch.norm(joints2d - init_joints2d[startImg:(startImg+numImgsInSplit)], dim=2)**2)
                 joints2d.shape
                 init_joints2d[startImg:(startImg+numImgsInSplit)].shape
-                # loss_refined = args.sil_loss*loss_sil + args.stab_loss*loss_stab
-                loss_refined = args.sil_loss*loss_sil 
+                loss_refined = args.sil_loss*loss_sil + args.stab_loss*loss_stab
+                # loss_refined = args.sil_loss*loss_sil 
 
                 # loss_refined = loss_sil
                 loss_refined.backward()
                 optimizer.step()
                 optimizer.zero_grad()
-                pdb.set_trace()
                 learnable_params[0].grad
                 learnable_params[0].grad.max()
                 # total_loss.append(loss_refined.item())
 
+                writer.add_scalar('refinement_loss', loss_refined.item(), iEpoch + iSplit*args.event_refinement_epochs)
+                writer.add_scalar('loss_sil', loss_sil.item(), iEpoch + iSplit*args.event_refinement_epochs)
+                writer.add_scalar('loss_stab', loss_stab.item(), iEpoch + iSplit*args.event_refinement_epochs)
+
                 if iEpoch % int(drawImgInterval/10) == 1:
                     if os.path.exists('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit-1)):
-                        frame_gray = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
-                    colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(closest_events_u.shape[0])}
+                        frame_gray = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit-1), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
+                    colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(closest_events_u_torch.shape[0])}
                     # boundaryAndEventOnImg = draw_feature_dots(frame_gray, np.transpose(boundaryPixelsinSeq[-1], (1, 0)), \
                     #                                      closest_events_u, \
                     #                                         [x for x in range(closest_events_u.shape[0])], colors)
-                    boundaryAndEventOnImg = draw_feature_dots(frame_gray, boundaryPixelsinSeq[-1][:,[1,0]], closest_events_u, [x for x in range(closest_events_u.shape[0])], colors)
+                    # boundaryAndEventOnImg = draw_feature_dots(frame_gray, boundaryPixelsinSeq[-1][:,[1,0]], closest_events_u, [x for x in range(closest_events_u.shape[0])], colors)
+                    boundaryAndEventOnImg = draw_feature_dots(frame_gray, verts2dOnSil, closest_events_u_torch, [x for x in range(closest_events_u_torch.shape[0])], colors)
+                    # verts : black; events: colorful
                     # boundaryAndEventOnImg = draw_feature_dots(frame_gray, boundaryPixelsinSeq[-1], closest_events_u, [x for x in range(closest_events_u.shape[0])], colors)
                     jointsForVisual = joints2d[-1].detach().cpu().numpy() * 256
                     jointsForVisual = jointsForVisual.astype(np.uint8)
@@ -393,8 +400,7 @@ def train(args):
                     skeletonOnImg = draw_skeleton(boundaryAndEventOnImg, jointsForVisual, draw_edges=True)
 
                     # cv2.imwrite('tmp.jpg', boundaryAndEventOnImg)
-                    writer.add_images('boundary_on_Img' , boundaryAndEventOnImg, iEpoch + iSplit*args.batch_optimization_epochs, dataformats='HWC')
-                    writer.add_scalar('refinement_loss', loss_refined.item(), iEpoch + iSplit*args.batch_optimization_epochs)
+                    writer.add_images('boundary_on_Img' , boundaryAndEventOnImg, iEpoch + iSplit*args.event_refinement_epochs, dataformats='HWC')
 
             # averLossForEpoch = sum(total_loss) / len(total_loss)
             # print(iEpoch, " aver loss for Etemp & Ecor: ", averLossForEpoch)
@@ -432,10 +438,11 @@ def get_args():
     parser.add_argument('--joints2d_loss', type=float, default=0.25) #200
     parser.add_argument('--temp_loss', type=float, default=0.1) #80
     parser.add_argument('--cor_loss', type=float, default=50) #50
-    parser.add_argument('--stab_loss', type=float, default=5) #5
-    parser.add_argument('--sil_loss', type=float, default=1)
+    parser.add_argument('--stab_loss', type=float, default=50) #5
+    parser.add_argument('--sil_loss', type=float, default=25)
     
     parser.add_argument('--lr_start', '-lr', type=float, default=0.001)
+    parser.add_argument('--lr_event', '-lre', type=float, default=0.001)
     args = parser.parse_args()
     print_args(args)
     return args

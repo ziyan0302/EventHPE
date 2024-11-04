@@ -86,16 +86,17 @@ def vertices_to_silhouette(vertices, H=256, W=256, device='cpu'):
     
     valid_edge_mask = right_edge_mask | left_edge_mask | above_edge_mask | below_edge_mask    
     
-    
     vertices = vertices[valid_edge_mask]
 
     if (0):
+        tmpV = vertices[valid_edge_mask].clone().detach().cpu().numpy().astype(np.uint8)
+        tmpV = vertices.clone().detach().cpu().numpy().astype(np.uint8)
         npmask = np.zeros((256,256))
         edgetmp = edge.clone()
         edgetmp1 = edge.clone().detach().cpu().numpy()/2
         # tmp2 = vertices[valid_edge_mask].detach().cpu().numpy().astype(np.uint8)
         tmp2 = vertices[valid_edge_mask].detach().cpu().numpy().astype(np.uint8)
-        edgetmp1[tmp2[:,1], tmp2[:,0]] = [255]
+        edgetmp1[tmpV[:,1], tmpV[:,0]] = [255]
         cv2.imwrite("random_tmp.jpg", edgetmp1)
 
 
@@ -192,29 +193,41 @@ def find_closest_events_torch(boundary_pixels, event_u, event_t, t_f, t_0, t_N, 
         # Compute spatial distances (squared Euclidean distance)
         spatial_distances_1 = torch.sum((boundary_pixels_expanded - events_xy_expanded) ** 2, dim=-1)  # Shape: (m, n)
 
-    tmp_events_xy = torch.from_numpy(filtered_events_u).to(torch.int64).to(device)
-    tmp_boundary_pixels = boundary_pixels.to(torch.int64).to(device)
+    tmp_events_xy = (torch.from_numpy(filtered_events_u)/256).to(device)
+    # tmp_boundary_pixels = (boundary_pixels/256).to(torch.int64).to(device)
+    tmp_boundary_pixels = (boundary_pixels/256).to(device)
     boundary_pixels_norm = (tmp_boundary_pixels ** 2).sum(dim=1, keepdim=True)  # Shape (m, 1)
     events_xy_norm = (tmp_events_xy ** 2).sum(dim=1, keepdim=True).T            # Shape (1, n)
-    spatial_distances = boundary_pixels_norm + events_xy_norm - 2 * torch.mm(tmp_boundary_pixels, tmp_events_xy.T)
-
+    # (x-y)^2 = x^2 + y^2 -2xy
+    # add a small regularization term
+    # spatial_distances = boundary_pixels_norm + events_xy_norm - 2 * torch.mm(tmp_boundary_pixels.to(torch.float16), tmp_events_xy.to(torch.float16).T)
+    spatial_distances = boundary_pixels_norm + events_xy_norm \
+        - 2 * torch.mm(tmp_boundary_pixels, tmp_events_xy.T) + 0.0001
+    
     # Compute temporal distances: normalized temporal differences
-    temporal_distances = (t_f - filtered_event_ts) / (t_N - t_0)  # Shape: (n,)
+    temporal_distances = (t_f - filtered_event_ts) / (t_N - t_0 + 0.0001)  # Shape: (n,)
     
     # Reshape temporal_distances for broadcasting
-    temporal_distances = torch.from_numpy(temporal_distances).unsqueeze(0)  # Shape: (1, n)
+    temporal_distances = torch.from_numpy(temporal_distances).unsqueeze(0).to(device)  # Shape: (1, n)
     
     # Compute total distance D(s_b, e) = λ * (temporal_dist)^2 + spatial_dist
     total_distances = lambda_val * (temporal_distances ** 2) + spatial_distances  # Shape: (m, n)
     
     # Find the event index that minimizes the distance for each boundary pixel
-    closest_event_indices = torch.argmin(total_distances, dim=1)
+    closest_event_indices = torch.argmin(total_distances, dim=1).cpu()
     
     # Get the closest events by indexing into event arrays
     closest_events_u = filtered_events_u[closest_event_indices]
     closest_events_t = filtered_event_ts[closest_event_indices]
+    if (0):
+        tmpB = boundary_pixels.clone().detach().cpu().numpy().astype(np.uint8)
+        tmpE = closest_events_u.astype(np.uint8)
+        npmask = np.zeros((256,256))
+        npmask[tmpB[:,1], tmpB[:,0]] = [100]
+        npmask[tmpE[:,1], tmpE[:,0]] = [255]
+        cv2.imwrite("random_tmp.jpg", npmask)
     
-    return closest_events_u, closest_events_t
+    return torch.from_numpy(closest_events_u).to(torch.int64).to(device), torch.from_numpy(closest_events_t).to(torch.int64).to(device)
 
 def findBoundaryPixels(vertPixels, H=256):
     boundaryPixels = []

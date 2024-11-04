@@ -111,8 +111,8 @@ def test(args):
     pelvis_mpjpeHMR_list = []
     pckh05HMR_list = []
     
-    startWindow = 6
-    endWindow = 7
+    startWindow = 20
+    endWindow = 70
     for iImg in range(startWindow, endWindow):
         joints3DGTIn1Split = joints3DGTForEveryFrame[iImg]
         joints3DPredIn1Split = joints3DPredForEveryFrame[iImg]
@@ -187,42 +187,42 @@ def test(args):
     print("aver pel_mpjpeHMR_result: ", np.mean(pampjpePel_result, axis=0)*1000)
     print("pckh@0.5: ", np.mean(pckh05HMR_result, axis=0))
 
+    if (0):
+        # Plot the tensor
+        # Create a figure with 1 row and 2 columns of subplots
+        fig, axes = plt.subplots(2, 2, figsize=(10, 5))
+        x = np.arange(pampjpe_result.shape[0])
+        x.shape
+        # Plot pa_mpjpe
+        axes[0,0].plot(x, pampjpe_result, color='blue')
+        axes[0,0].plot(x, pampjpeHMR_result, color='red')
+        axes[0,0].set_title("pampjpe")
+        axes[0,0].set_xlabel("index")
+        axes[0,0].set_ylabel("pampjpe")
 
-    # Plot the tensor
-    # Create a figure with 1 row and 2 columns of subplots
-    fig, axes = plt.subplots(2, 2, figsize=(10, 5))
-    x = np.arange(pampjpe_result.shape[0])
-    x.shape
-    # Plot pa_mpjpe
-    axes[0,0].plot(x, pampjpe_result, color='blue')
-    axes[0,0].plot(x, pampjpeHMR_result, color='red')
-    axes[0,0].set_title("pampjpe")
-    axes[0,0].set_xlabel("index")
-    axes[0,0].set_ylabel("pampjpe")
+        # Plot mpjpe
+        axes[0,1].plot(x, mpjpe_result, color='blue')
+        axes[0,1].plot(x, mpjpeHMR_result, color='red')
+        axes[0,1].set_title("mpjpe")
+        axes[0,1].set_xlabel("index")
+        axes[0,1].set_ylabel("mpjpe")
 
-    # Plot mpjpe
-    axes[0,1].plot(x, mpjpe_result, color='blue')
-    axes[0,1].plot(x, mpjpeHMR_result, color='red')
-    axes[0,1].set_title("mpjpe")
-    axes[0,1].set_xlabel("index")
-    axes[0,1].set_ylabel("mpjpe")
+        # Plot normalized pa_mpjpe
+        axes[1,0].plot(x, pampjpeNorm_result, color='blue')
+        axes[1,0].plot(x, pampjpeHMRNorm_result, color='red')
+        axes[1,0].set_title("norm_pampjpe")
+        axes[1,0].set_xlabel("index")
+        axes[1,0].set_ylabel("norm_pampjpe")
 
-    # Plot normalized pa_mpjpe
-    axes[1,0].plot(x, pampjpeNorm_result, color='blue')
-    axes[1,0].plot(x, pampjpeHMRNorm_result, color='red')
-    axes[1,0].set_title("norm_pampjpe")
-    axes[1,0].set_xlabel("index")
-    axes[1,0].set_ylabel("norm_pampjpe")
+        # Plot normalized mpjpe
+        axes[1,1].plot(x, mpjpeNorm_result, color='blue')
+        axes[1,1].plot(x, mpjpeHMRNorm_result, color='red')
+        axes[1,1].set_title("norm_mpjpe")
+        axes[1,1].set_xlabel("index")
+        axes[1,1].set_ylabel("norm_mpjpe")
 
-    # Plot normalized mpjpe
-    axes[1,1].plot(x, mpjpeNorm_result, color='blue')
-    axes[1,1].plot(x, mpjpeHMRNorm_result, color='red')
-    axes[1,1].set_title("norm_mpjpe")
-    axes[1,1].set_xlabel("index")
-    axes[1,1].set_ylabel("norm_mpjpe")
-
-    plt.tight_layout()  # Adjusts spacing between subplots for a cleaner layout
-    plt.savefig('resultforSequence.png', format='png', dpi=300)
+        plt.tight_layout()  # Adjusts spacing between subplots for a cleaner layout
+        plt.savefig('resultforSequence.png', format='png', dpi=300)
 
 
 
