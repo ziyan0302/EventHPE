@@ -55,12 +55,12 @@ def vertices_to_silhouette(vertices, H=256, W=256, device='cpu'):
     
     # Find boundary by subtracting the two images
     edge = image5x5 - image3x3
-    non_zero_locations = torch.nonzero(edge != 0, as_tuple=False)
+    # non_zero_locations = torch.nonzero(edge != 0, as_tuple=False)
     x_coords, y_coords = vertices[:,0], vertices[:,1]
     
     # Create a mask for vertex indices
-    mask_with_indices = -torch.ones((H, W), dtype=torch.int32, device=device)  # Initialize with -1
-    valid_mask = (0 <= x_coords) & (x_coords < W) & (0 <= y_coords) & (y_coords < H)
+    # mask_with_indices = -torch.ones((H, W), dtype=torch.int32, device=device)  # Initialize with -1
+    # valid_mask = (0 <= x_coords) & (x_coords < W) & (0 <= y_coords) & (y_coords < H)
     
     # collect vertices if one of its neighbors is a effective boundary edge
     
@@ -85,7 +85,6 @@ def vertices_to_silhouette(vertices, H=256, W=256, device='cpu'):
     below_edge_mask = edge[below_neighbor[:,1].to(torch.long), below_neighbor[:,0].to(torch.long)] != 0
     
     valid_edge_mask = right_edge_mask | left_edge_mask | above_edge_mask | below_edge_mask    
-    
     vertices = vertices[valid_edge_mask]
 
     if (0):
@@ -668,6 +667,8 @@ def draw_skeleton(input_image, joints, draw_edges=True, vis=None, radius=None):
 
 def draw_feature_dots(image, feat_array, vert_array, closest_vert_indices, colors):
     # Convert grayscale image to BGR format for color drawing
+    # feat: simple color; vert: colorful
+    
     output_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
     # output_image = image.copy()
 
@@ -683,13 +684,36 @@ def draw_feature_dots(image, feat_array, vert_array, closest_vert_indices, color
         iV+=1
         # Draw a dot on the output image
         cv2.circle(output_image, (xV, yV), radius=2, color=color, thickness=-1)
-        cv2.circle(output_image, (x, y), radius=1, color=[0,0,0], thickness=-1)
+        cv2.circle(output_image, (x, y), radius=1, color=[255,255,0], thickness=-1)
         cv2.imwrite('tmp.jpg', output_image)
+    return output_image
+
+
+def draw_feature_dots_lines(image, feat_array, vert_array, closest_vert_indices, H, W):
+    # Convert grayscale image to BGR format for color drawing
+    # feat: simple color; vert: colorful
+    output_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    # output_image = image.copy()
+
+    # Draw dots for each feature in the data array
+    iV = 0
+    for row in feat_array:
+        x = int(row[0])                # x coordinate
+        y = int(row[1])                # y coordinate
+        vert_idx = closest_vert_indices[iV]
+        xV = np.clip(vert_array[vert_idx,0], 0, W).astype(np.uint8)
+        yV = np.clip(vert_array[vert_idx,1], 0, H).astype(np.uint8)
+        iV+=1
+        # Draw a dot on the output image
+        cv2.line(output_image, (xV, yV), (x, y), [0,255,255], 1)
+        cv2.circle(output_image, (xV, yV), radius=2, color=[0,255,255], thickness=-1)
+        cv2.circle(output_image, (x, y), radius=1, color=[255,255,0], thickness=-1)
+        # cv2.imwrite('tmp.jpg', output_image)
     return output_image
 
 def findImgFeat(gray_img_sequence):
     # params for ShiTomasi corner detection
-    feature_params = dict( maxCorners = 100,
+    feature_params = dict( maxCorners = 300,
                         qualityLevel = 0.3,
                         minDistance = 7,
                         blockSize = 7 )

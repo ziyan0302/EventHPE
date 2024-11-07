@@ -11,18 +11,18 @@ OUTPUT_FILE="output.txt"
 > "$OUTPUT_FILE"
 
 # Define an array of argument sets
+    # "--batch_optimization_epochs 0 --event_refinement_epochs 200 --stab_loss 0"
+    # "--batch_optimization_epochs 0 --event_refinement_epochs 200"
+    # "--batch_optimization_epochs 0 --event_refinement_epochs 200 --sil_loss 500 --stab_loss 50"
+    # "--batch_optimization_epochs 2000 --event_refinement_epochs 0"
+    # "--batch_optimization_epochs 2000 --event_refinement_epochs 100"
+    # "--batch_optimization_epochs 2500 --event_refinement_epochs 100"
+    # "--batch_optimization_epochs 3000 --event_refinement_epochs 100"
+    # "--batch_optimization_epochs 2000 --event_refinement_epochs 100 --lr_event 0.005"
 declare -a ARGUMENT_SETS=(
     "--batch_optimization_epochs 0 --event_refinement_epochs 0"
-    "--batch_optimization_epochs 0 --event_refinement_epochs 200 --stab_loss 0"
-    "--batch_optimization_epochs 0 --event_refinement_epochs 200"
-    "--batch_optimization_epochs 0 --event_refinement_epochs 200 --sil_loss 500 --stab_loss 50"
-    "--batch_optimization_epochs 2000 --event_refinement_epochs 0"
-    "--batch_optimization_epochs 2000 --event_refinement_epochs 20"
+    "--batch_optimization_epochs 0 --event_refinement_epochs 20"
     "--batch_optimization_epochs 2000 --event_refinement_epochs 30"
-    "--batch_optimization_epochs 2000 --event_refinement_epochs 100"
-    "--batch_optimization_epochs 2500 --event_refinement_epochs 100"
-    "--batch_optimization_epochs 3000 --event_refinement_epochs 100"
-    "--batch_optimization_epochs 2000 --event_refinement_epochs 100 --lr_event 0.005"
 )
 
 # Loop through each set of arguments and run the Python script

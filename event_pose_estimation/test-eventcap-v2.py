@@ -34,7 +34,7 @@ def test(args):
     smpl_dir = args.smpl_dir
     print('[smpl_dir] %s' % smpl_dir)
 
-    action = 'subject03_group1_time1'
+    action = 'subject01_group1_time1'
     numImgsInSplit = 8
     scale = args.img_size / 1280.
     cam_intr = np.array([1679.3, 1679.3, 641, 641]) * scale
@@ -91,8 +91,14 @@ def test(args):
     learnable_pose_and_shape = torch.load('learnable_parameters-V2.pt')
     mpjpe_result, pampjpe_result, joints3DGTForEveryFrame, joints3DPredForEveryFrame = \
         evaluation(args, action, learnable_pose_and_shape, model, cam_intr, device)
+    # _, _, _, jointsRealPredForEveryFrame = \
+    #     evaluation(args, action, learnable_pose_and_shape, model, cam_intr, device)
+    
     # mpjpe_result, pampjpe_result, joints3DGTForEveryFrame, joints3DPredForEveryFrame = \
     #     evaluation(args, action, paramsHMRForEveryFrame, model, cam_intr, device)
+
+    paramsHMRForEveryFrame[0]
+    learnable_pose_and_shape[0]
 
     # joints3DPredForqEveryFrame = joints3DPredForEveryFrame + transHMRForEveryFrame
 
@@ -111,16 +117,22 @@ def test(args):
     pelvis_mpjpeHMR_list = []
     pckh05HMR_list = []
     
-    startWindow = 20
-    endWindow = 70
-    for iImg in range(startWindow, endWindow):
-        joints3DGTIn1Split = joints3DGTForEveryFrame[iImg]
-        joints3DPredIn1Split = joints3DPredForEveryFrame[iImg]
+    startWindow = int(args.startWindow)
+    endWindow = int(args.endWindow)
+    for iWin in range(startWindow, endWindow):
+        joints3DGTIn1Split = joints3DGTForEveryFrame[iWin]
+        # firstGTinNextWindow = joints3DGTForEveryFrame[iWin+1][0]
+        # joints3DGTIn1Split = torch.vstack((joints3DGTIn1Split, firstGTinNextWindow.unsqueeze(0)))
+        joints3DPredIn1Split = joints3DPredForEveryFrame[iWin]
+        # firstPredinNextWindow = joints3DPredForEveryFrame[iWin+1][0]
+        # joints3DPredIn1Split = torch.vstack((joints3DPredIn1Split, firstPredinNextWindow.unsqueeze(0)))
+
         joints3DPredIn1Split_Normalized = joints3DPredIn1Split - \
                     joints3DPredIn1Split[:,0,:].unsqueeze(1).repeat(1,joints3DPredIn1Split.shape[1],1)
         joints3DGTIn1Split_Normalized = joints3DGTIn1Split - \
                     joints3DGTIn1Split[:,0,:].unsqueeze(1).repeat(1,joints3DPredIn1Split.shape[1],1)
-        joints3DHMRIn1Split_Normalized = joints3DHMRForEveryFrame[iImg*8:(iImg+1)*8] - joints3DHMRForEveryFrame[iImg*8:(iImg+1)*8][:,0,:].unsqueeze(1)
+        joints3DHMRIn1Split_Normalized = joints3DHMRForEveryFrame[iWin*8:(iWin+1)*8] - joints3DHMRForEveryFrame[iWin*8:(iWin+1)*8][:,0,:].unsqueeze(1)
+        
         mpjpe = torch.mean(compute_mpjpe(joints3DPredIn1Split_Normalized.unsqueeze(0), \
                                          joints3DGTIn1Split_Normalized.unsqueeze(0)),dim=2)  # [1, T, 24]
         pa_mpjpe = torch.mean(compute_pa_mpjpe_eventcap(joints3DPredIn1Split_Normalized,\
@@ -129,17 +141,17 @@ def test(args):
         
         pckh05 = torch.sum(compute_pck_head(joints3DPredIn1Split.unsqueeze(0), joints3DGTIn1Split.unsqueeze(0)), dim=2)/24
 
-        mpjpeHMR = torch.mean(compute_mpjpe(joints3DHMRForEveryFrame[iImg*8:(iImg+1)*8].unsqueeze(0), \
+        mpjpeHMR = torch.mean(compute_mpjpe(joints3DHMRForEveryFrame[iWin*8:(iWin+1)*8].unsqueeze(0), \
                                          joints3DGTIn1Split.unsqueeze(0)),dim=2)  # [1, T, 24]
-        pa_mpjpeHMR = torch.mean(compute_pa_mpjpe_eventcap(joints3DHMRForEveryFrame[iImg*8:(iImg+1)*8],\
+        pa_mpjpeHMR = torch.mean(compute_pa_mpjpe_eventcap(joints3DHMRForEveryFrame[iWin*8:(iWin+1)*8],\
                                                          joints3DGTIn1Split), dim=1)  # [T, 24]
         mpjpeHMR_Norm = torch.mean(compute_mpjpe(joints3DHMRIn1Split_Normalized.unsqueeze(0), \
                                          joints3DGTIn1Split_Normalized.unsqueeze(0)),dim=2)  # [1, T, 24]
         pa_mpjpeHMR_Norm = torch.mean(compute_pa_mpjpe_eventcap(joints3DHMRIn1Split_Normalized,\
                                                          joints3DGTIn1Split_Normalized), dim=1)  # [T, 24]
-        pelvis_mpjpeHMR= torch.mean(compute_pelvis_mpjpe(joints3DHMRForEveryFrame[iImg*8:(iImg+1)*8].unsqueeze(0), \
+        pelvis_mpjpeHMR= torch.mean(compute_pelvis_mpjpe(joints3DHMRForEveryFrame[iWin*8:(iWin+1)*8].unsqueeze(0), \
                                                          joints3DGTIn1Split.unsqueeze(0)), dim=2)
-        pckh05HMR = torch.sum(compute_pck_head(joints3DHMRForEveryFrame[iImg*8:(iImg+1)*8].unsqueeze(0), \
+        pckh05HMR = torch.sum(compute_pck_head(joints3DHMRForEveryFrame[iWin*8:(iWin+1)*8].unsqueeze(0), \
                                                 joints3DGTIn1Split.unsqueeze(0)), dim=2)/24
         
 
@@ -187,7 +199,7 @@ def test(args):
     print("aver pel_mpjpeHMR_result: ", np.mean(pampjpePel_result, axis=0)*1000)
     print("pckh@0.5: ", np.mean(pckh05HMR_result, axis=0))
 
-    if (0):
+    if (1):
         # Plot the tensor
         # Create a figure with 1 row and 2 columns of subplots
         fig, axes = plt.subplots(2, 2, figsize=(10, 5))
@@ -260,6 +272,9 @@ def get_args():
     parser.add_argument('--stab_loss', type=float, default=1)
     parser.add_argument('--sil_loss', type=float, default=1)
     
+    parser.add_argument('--startWindow', type=float, default=6) #5
+    parser.add_argument('--endWindow', type=float, default=7)
+
     parser.add_argument('--lr_start', '-lr', type=float, default=0.001)
     args = parser.parse_args()
     print_args(args)
