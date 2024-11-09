@@ -713,9 +713,9 @@ def draw_feature_dots_lines(image, feat_array, vert_array, closest_vert_indices,
 
 def findImgFeat(gray_img_sequence):
     # params for ShiTomasi corner detection
-    feature_params = dict( maxCorners = 300,
-                        qualityLevel = 0.3,
-                        minDistance = 7,
+    feature_params = dict( maxCorners = 500,
+                        qualityLevel = 0.05,
+                        minDistance = 2,
                         blockSize = 7 )
 
     # Parameters for lucas kanade optical flow

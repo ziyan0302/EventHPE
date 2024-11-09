@@ -226,9 +226,10 @@ def train(args):
         print('===== Ebatch Optimization =====')
         # for iSplit in range(totalSplits):
         # set optimizer
+        print(time.time())
         optimizer = torch.optim.SGD(learnable_params, lr=args.lr_start, momentum=0)
         # optimizer = torch.optim.Adam(learnable_params, lr=args.lr_start)
-        for iSplit in range(args.startWindow,args.endWindow):
+        for iSplit in range(int(args.startWindow),int(args.endWindow)):
             transComparison_list = []
             for iEpoch in range(args.batch_optimization_epochs):
                 startImg = iSplit * numImgsInSplit
@@ -264,7 +265,7 @@ def train(args):
                 # Initialize the scalar to store the cumulative loss
                 loss_cor = torch.tensor(0.0, requires_grad=True)
 
-                tolerance = 10
+                tolerance = 6
                 startFeatFrame = iSplit*(numImgsInSplit-1)
 
                 imgCorFor1Frame = np.zeros((frame_gray.shape[0]*(numImgsInSplit-1), frame_gray.shape[1]*3, 3))
@@ -399,7 +400,7 @@ def train(args):
         # learnable_params = [learnable_pose_and_shape]
 
         optimizer = torch.optim.SGD(learnable_params, lr=args.lr_event, momentum=0)
-        for iSplit in range(args.startWindow,args.endWindow):
+        for iSplit in range(int(args.startWindow),int(args.endWindow)):
             for iEpoch in range(args.event_refinement_epochs):
                 if (iEpoch % 25 == 24):
                     print(f"{iEpoch} event_refinement for {iSplit} ")
@@ -456,7 +457,7 @@ def train(args):
                     skeletonOnImg = draw_skeleton(boundaryAndEventOnImg, jointsForVisual, draw_edges=True)
 
                     writer.add_images('boundary_on_Img' , boundaryAndEventOnImg, iEpoch + iSplit*args.event_refinement_epochs, dataformats='HWC')
-
+        print(time.time())
         torch.save(learnable_pose_and_shape, 'learnable_parameters-V2.pt')
         break
 
@@ -488,7 +489,7 @@ def get_args():
     parser.add_argument('--joints3d_loss', type=float, default=25) #1
     parser.add_argument('--joints2d_loss', type=float, default=25) #200
     parser.add_argument('--temp_loss', type=float, default=0.1) #80
-    parser.add_argument('--cor_loss', type=float, default=1) #50
+    parser.add_argument('--cor_loss', type=float, default=0.1) #50
     parser.add_argument('--stab_loss', type=float, default=50) #5
     parser.add_argument('--sil_loss', type=float, default=25)
 
