@@ -42,7 +42,7 @@ def vertices_to_silhouette(vertices, H=256, W=256, device='cpu'):
         [0, 1, 0]
     ], dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)  # Shape (1, 1, 3, 3)
     # Initialize a mask of zeros
-    mask = torch.zeros((1, 1, H, H), dtype=torch.float32, device=device)
+    mask = torch.zeros((1, 1, H, W), dtype=torch.float32, device=device)
     mask[0, 0, vertPixels[:, 1], vertPixels[:, 0]] = 1.0
 
     # Dilate the mask with 5x5 and 3x3 kernels
@@ -100,6 +100,98 @@ def vertices_to_silhouette(vertices, H=256, W=256, device='cpu'):
 
 
     return vertices
+
+
+# Function to create the silhouette from vertices
+def vertices_to_silhouette_Extreme(vertices, H=256, W=256, device='cpu'):
+    """
+    Create a silhouette image from vertices while retaining gradients.
+    Args:
+    - vertices (torch.Tensor): Tensor of shape (N, 2) representing x, y coordinates.
+    - H (int): Height of the image.
+    - W (int): Width of the image.
+    - device (str): Device for computation, 'cpu' or 'cuda'.
+    Returns:
+    - silhouette (torch.Tensor): Tensor of shape (1, 1, H, W) representing the silhouette.
+    """
+    vertPixels = vertices.to(torch.int64)  # Convert to int64 for indexing compatibility in PyTorch
+    
+    # Define structuring elements (kernels) for dilation
+    kernel7x7 = torch.ones((7,7), dtype=torch.float32, device=device)
+    kernel7x7[0,0], kernel7x7[0,-1], kernel7x7[-1,0], kernel7x7[-1,-1] = 0,0,0,0 
+    kernel7x7 = kernel7x7.unsqueeze(0).unsqueeze(0)  # Shape (1, 1, 7, 7)
+
+    kernel5x5 = torch.ones((5,5), dtype=torch.float32, device=device)
+    kernel5x5[0,0], kernel5x5[0,-1], kernel5x5[-1,0], kernel5x5[-1,-1] = 0,0,0,0 
+    kernel5x5 = kernel5x5.unsqueeze(0).unsqueeze(0)  # Shape (1, 1, 5, 5)
+
+    # Initialize a mask of zeros
+    mask = torch.zeros((1, 1, H, W), dtype=torch.float32, device=device)
+    mask[0, 0, vertPixels[:, 1], vertPixels[:, 0]] = 1.0
+
+    # Dilate the mask with 5x5 and 3x3 kernels
+    mask7x7 = F.conv2d(mask, kernel7x7, padding=3).clamp(0, 1)
+    mask5x5 = F.conv2d(mask, kernel5x5, padding=2).clamp(0, 1)
+    
+    # Create images with "dilated" boundaries
+    image7x7 = (mask7x7 * 255).squeeze().to(torch.uint8)
+    image5x5 = (mask5x5 * 255).squeeze().to(torch.uint8)
+    
+    # Find boundary by subtracting the two images
+    edge = image7x7 - image5x5
+    # non_zero_locations = torch.nonzero(edge != 0, as_tuple=False)
+    x_coords, y_coords = vertices[:,0], vertices[:,1]
+    
+    # Create a mask for vertex indices
+    # mask_with_indices = -torch.ones((H, W), dtype=torch.int32, device=device)  # Initialize with -1
+    # valid_mask = (0 <= x_coords) & (x_coords < W) & (0 <= y_coords) & (y_coords < H)
+    
+    # collect vertices if one of its neighbors is a effective boundary edge
+    
+    ## right neighbor
+    right_neighbor = vertices.clone()
+    right_neighbor[:,0] = torch.clamp(x_coords + 3, 0, W - 1)
+    right_edge_mask = edge[right_neighbor[:,1].to(torch.long), right_neighbor[:,0].to(torch.long)] != 0
+    torch.any(right_edge_mask)
+
+    ## left neighbor
+    left_neighbor = vertices.clone()
+    left_neighbor[:,0] = torch.clamp(x_coords - 3, 0, W - 1)
+    left_edge_mask = edge[left_neighbor[:,1].to(torch.long), left_neighbor[:,0].to(torch.long)] != 0
+
+    ## above neighbor
+    above_neighbor = vertices.clone()
+    above_neighbor[:,1] = torch.clamp(y_coords - 3, 0, H - 1)
+    above_edge_mask = edge[above_neighbor[:,1].to(torch.long), above_neighbor[:,0].to(torch.long)] != 0
+
+    ## below neighbor
+    below_neighbor = vertices.clone()
+    below_neighbor[:,1] = torch.clamp(y_coords + 3, 0, H - 1)
+    below_edge_mask = edge[below_neighbor[:,1].to(torch.long), below_neighbor[:,0].to(torch.long)] != 0
+    
+    valid_edge_mask = right_edge_mask | left_edge_mask | above_edge_mask | below_edge_mask    
+    vertices = vertices[valid_edge_mask]
+
+    if (0):
+        torch.all(valid_edge_mask)
+        tmpV = vertices[valid_edge_mask].clone().detach().cpu().numpy().astype(np.uint16)
+        tmpV = vertices.clone().detach().cpu().numpy().astype(np.uint16)
+        npmask = np.zeros((H,W))
+        edgetmp = edge.clone()
+        edgetmp1 = edge.clone().detach().cpu().numpy()/2
+        rightTmp = right_neighbor.clone().detach().cpu().numpy().astype(np.uint16)
+        # tmp2 = vertices[valid_edge_mask].detach().cpu().numpy().astype(np.uint8)
+        tmp2 = vertices[valid_edge_mask].detach().cpu().numpy().astype(np.uint8)
+        edgetmp1[tmpV[:,1], tmpV[:,0]] = [255]
+        edgetmp1[rightTmp[:,1], rightTmp[:,0]] = [255]
+        
+        npmask[tmpV[:,1], tmpV[:,0]] = [255]
+        cv2.imwrite("tmp.jpg", edgetmp1)
+
+
+    return vertices
+
+
 
 def findClosestPointTorch(source, target):
     """
@@ -171,9 +263,9 @@ def find_closest_events(boundary_pixels, event_u, event_t, t_f, t_0, t_N, lambda
 
     return closest_events_u, closest_events_t
 
-def find_closest_events_torch(boundary_pixels, event_u, event_t, t_f, t_0, t_N, lambda_val, device='cpu'):
+def find_closest_events_torch(boundary_pixels, event_u, event_t, t_f, t_0, t_N, lambda_val, H, W, device='cpu'):
     # Define the time window [t_f - 10000, t_f + 10000]
-    time_range = 5000
+    time_range = 10000
     start_time = max(t_f - time_range, event_t[0].item())
     end_time = min(t_f + time_range, event_t[-1].item())
 
@@ -192,9 +284,8 @@ def find_closest_events_torch(boundary_pixels, event_u, event_t, t_f, t_0, t_N, 
         # Compute spatial distances (squared Euclidean distance)
         spatial_distances_1 = torch.sum((boundary_pixels_expanded - events_xy_expanded) ** 2, dim=-1)  # Shape: (m, n)
 
-    tmp_events_xy = (torch.from_numpy(filtered_events_u)/256).to(device)
-    # tmp_boundary_pixels = (boundary_pixels/256).to(torch.int64).to(device)
-    tmp_boundary_pixels = (boundary_pixels/256).to(device)
+    tmp_events_xy = (torch.from_numpy(filtered_events_u) * torch.tensor([1/W, 1/H])).to(device)
+    tmp_boundary_pixels = (boundary_pixels * torch.tensor([1/W, 1/H]).to(device))
     boundary_pixels_norm = (tmp_boundary_pixels ** 2).sum(dim=1, keepdim=True)  # Shape (m, 1)
     events_xy_norm = (tmp_events_xy ** 2).sum(dim=1, keepdim=True).T            # Shape (1, n)
     # (x-y)^2 = x^2 + y^2 -2xy
@@ -211,7 +302,6 @@ def find_closest_events_torch(boundary_pixels, event_u, event_t, t_f, t_0, t_N, 
     
     # Compute total distance D(s_b, e) = λ * (temporal_dist)^2 + spatial_dist
     total_distances = lambda_val * (temporal_distances ** 2) + spatial_distances  # Shape: (m, n)
-    
     # Find the event index that minimizes the distance for each boundary pixel
     closest_event_indices = torch.argmin(total_distances, dim=1).cpu()
     
@@ -219,14 +309,100 @@ def find_closest_events_torch(boundary_pixels, event_u, event_t, t_f, t_0, t_N, 
     closest_events_u = filtered_events_u[closest_event_indices]
     closest_events_t = filtered_event_ts[closest_event_indices]
     if (0):
-        tmpB = boundary_pixels.clone().detach().cpu().numpy().astype(np.uint8)
-        tmpE = closest_events_u.astype(np.uint8)
-        npmask = np.zeros((256,256))
+        tmpB = boundary_pixels.clone().detach().cpu().numpy().astype(np.uint16)
+        tmpE = closest_events_u.astype(np.uint16)
+        filterE = np.clip(filtered_events_u, 0 ,[W-1, H-1])
+        npmask = np.zeros((H,W))
         npmask[tmpB[:,1], tmpB[:,0]] = [100]
         npmask[tmpE[:,1], tmpE[:,0]] = [255]
-        cv2.imwrite("random_tmp.jpg", npmask)
+        npmask[event_u[:,1], event_u[:,0]] = [255]
+        npmask[filterE[:,1], filterE[:,0]] = [255]
+        
+        cv2.imwrite("tmp.jpg", npmask)
     
     return torch.from_numpy(closest_events_u).to(torch.int64).to(device), torch.from_numpy(closest_events_t).to(torch.int64).to(device)
+
+def find_closest_events_torch_v2(boundary_pixels, event_u, event_t, t_f, t_0, t_N, lambda_val, H, W, device='cpu'):
+    # Define the time window [t_f - 10000, t_f + 10000]
+    time_range = 10000
+    start_time = max(t_f - time_range, event_t[0].item())
+    end_time = min(t_f + time_range, event_t[-1].item())
+
+    # Find the indices of the events that fall within the time range
+    valid_indices = (event_t >= start_time) & (event_t <= end_time)
+    
+    # Filter the events and timestamps based on valid_indices
+    filtered_events_u = event_u[valid_indices].astype(np.int32)
+    filtered_event_ts = event_t[valid_indices].astype(np.int32)
+
+    if (0): # spend too much time
+        # Expand the dimensions for broadcasting
+        boundary_pixels_expanded = boundary_pixels[:, None, :].to(torch.int64).to(device)  # Shape (m, 1, 2)
+        events_xy_expanded = torch.from_numpy(filtered_events_u)[None, :, :].to(torch.int64).to(device)      # Shape (1, n, 2)
+        
+        # Compute spatial distances (squared Euclidean distance)
+        spatial_distances_1 = torch.sum((boundary_pixels_expanded - events_xy_expanded) ** 2, dim=-1)  # Shape: (m, n)
+
+    # Set the neighborhood range (8x8)
+    neighborhood_size = 8
+    half_neighborhood = neighborhood_size // 2
+    
+    
+    tmp_events_xy = (torch.from_numpy(filtered_events_u) * torch.tensor([1/W, 1/H])).to(device)
+    tmp_boundary_pixels = (boundary_pixels * torch.tensor([1/W, 1/H]).to(device))
+    boundary_pixels_norm = (tmp_boundary_pixels ** 2).sum(dim=1, keepdim=True)  # Shape (m, 1)
+    events_xy_norm = (tmp_events_xy ** 2).sum(dim=1, keepdim=True).T            # Shape (1, n)
+
+    # Calculate boundary pixels' neighborhood bounds
+    x_min = tmp_boundary_pixels[:, 0:1] - half_neighborhood / W  # Shape: (m, 1)
+    x_max = tmp_boundary_pixels[:, 0:1] + half_neighborhood / W  # Shape: (m, 1)
+    y_min = tmp_boundary_pixels[:, 1:2] - half_neighborhood / H  # Shape: (m, 1)
+    y_max = tmp_boundary_pixels[:, 1:2] + half_neighborhood / H  # Shape: (m, 1)
+
+    # Generate masks for each event to check if within 8x8 neighborhood of each boundary pixel
+    within_neighborhood_mask = (
+        (tmp_events_xy[:, 0].unsqueeze(0) >= x_min) & (tmp_events_xy[:, 0].unsqueeze(0) <= x_max) &
+        (tmp_events_xy[:, 1].unsqueeze(0) >= y_min) & (tmp_events_xy[:, 1].unsqueeze(0) <= y_max)
+    )  # Shape: (m, n)
+
+    # Calculate spatial distances using masking for neighborhood
+    # (x-y)^2 = x^2 + y^2 -2xy
+    # add a small regularization term
+    spatial_distances = (
+        boundary_pixels_norm + events_xy_norm -
+        2 * torch.mm(tmp_boundary_pixels, tmp_events_xy.T) + 0.0001
+    )  # Shape: (m, n)
+    spatial_distances = spatial_distances.masked_fill(~within_neighborhood_mask, float('inf'))  # Exclude non-neighborhood events
+    
+    # Compute temporal distances: normalized temporal differences
+    temporal_distances = (t_f - filtered_event_ts) / (t_N - t_0 + 0.0001)  # Shape: (n,)
+    
+    # Reshape temporal_distances for broadcasting
+    temporal_distances = torch.from_numpy(temporal_distances).unsqueeze(0).to(device)  # Shape: (1, n)
+    
+    # Compute total distance D(s_b, e) = λ * (temporal_dist)^2 + spatial_dist
+    total_distances = lambda_val * (temporal_distances ** 2) + spatial_distances  # Shape: (m, n)
+    # Find the event index that minimizes the distance for each boundary pixel
+    closest_event_indices = torch.argmin(total_distances, dim=1).cpu()
+    
+    # Get the closest events by indexing into event arrays
+    closest_events_u = filtered_events_u[closest_event_indices]
+    closest_events_t = filtered_event_ts[closest_event_indices]
+    if (0):
+        tmpB = boundary_pixels.clone().detach().cpu().numpy().astype(np.uint16)
+        tmpE = closest_events_u.astype(np.uint16)
+        filterE = np.clip(filtered_events_u, 0 ,[W-1, H-1])
+        npmask = np.zeros((H,W))
+        npmask[tmpB[:,1], tmpB[:,0]] = [100]
+        npmask[tmpE[:,1], tmpE[:,0]] = [255]
+        npmask[event_u[:,1], event_u[:,0]] = [255]
+        npmask[filterE[:,1], filterE[:,0]] = [255]
+        
+        cv2.imwrite("tmp.jpg", npmask)
+    
+    return torch.from_numpy(closest_events_u).to(torch.int64).to(device), torch.from_numpy(closest_events_t).to(torch.int64).to(device)
+
+
 
 def findBoundaryPixels(vertPixels, H=256):
     boundaryPixels = []
@@ -668,9 +844,10 @@ def draw_skeleton(input_image, joints, draw_edges=True, vis=None, radius=None):
 def draw_feature_dots(image, feat_array, vert_array, closest_vert_indices, colors):
     # Convert grayscale image to BGR format for color drawing
     # feat: simple color; vert: colorful
-    
-    output_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    # output_image = image.copy()
+    if len(image.shape) == 2:
+        output_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+    else:
+        output_image = image.copy()
 
     # Draw dots for each feature in the data array
     iV = 0
@@ -685,15 +862,17 @@ def draw_feature_dots(image, feat_array, vert_array, closest_vert_indices, color
         # Draw a dot on the output image
         cv2.circle(output_image, (xV, yV), radius=2, color=color, thickness=-1)
         cv2.circle(output_image, (x, y), radius=1, color=[255,255,0], thickness=-1)
-        cv2.imwrite('tmp.jpg', output_image)
+        # cv2.imwrite('tmp.jpg', output_image)
     return output_image
 
 
 def draw_feature_dots_lines(image, feat_array, vert_array, closest_vert_indices, H, W):
     # Convert grayscale image to BGR format for color drawing
     # feat: simple color; vert: colorful
-    output_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    # output_image = image.copy()
+    if len(image.shape) == 3:
+        output_image = image.copy()
+    else:
+        output_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
 
     # Draw dots for each feature in the data array
     iV = 0
@@ -701,8 +880,8 @@ def draw_feature_dots_lines(image, feat_array, vert_array, closest_vert_indices,
         x = int(row[0])                # x coordinate
         y = int(row[1])                # y coordinate
         vert_idx = closest_vert_indices[iV]
-        xV = np.clip(vert_array[vert_idx,0], 0, W).astype(np.uint8)
-        yV = np.clip(vert_array[vert_idx,1], 0, H).astype(np.uint8)
+        xV = np.clip(vert_array[vert_idx,0], 0, W).astype(np.uint16)
+        yV = np.clip(vert_array[vert_idx,1], 0, H).astype(np.uint16)
         iV+=1
         # Draw a dot on the output image
         cv2.line(output_image, (xV, yV), (x, y), [0,255,255], 1)
@@ -792,3 +971,26 @@ def evaluation(args, action, learnable_pose_and_shape, model, cam_intr, device):
 
     return torch.hstack(mpjpe_list), torch.hstack(pampjpe_list), \
         torch.stack(joints3DGTForEveryFrame), torch.stack(joints3DPredForEveryFrame)
+
+
+
+def txt_to_np(file_path):
+    data_list = []
+
+    # Open and read the file
+    with open(file_path, 'r') as file:
+        for line in file:
+            # Split the line into individual elements
+            parts = line.strip().split()
+
+            # Convert them to appropriate types
+            feature_id = int(parts[0])
+            timestamp = float(parts[1])
+            x = float(parts[2])
+            y = float(parts[3])
+
+            # Store in dictionary with feature_id as key and the rest as values
+            data_list.append([feature_id, timestamp, int(x), int(y)])
+    data = np.array(data_list)
+
+    return data
