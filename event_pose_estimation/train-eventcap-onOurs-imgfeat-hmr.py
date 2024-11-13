@@ -32,6 +32,7 @@ from scipy.spatial import distance_matrix
 from scipy.optimize import linear_sum_assignment
 from PIL import Image
 import io
+import json
 
 # import event_pose_estimation.utils as util
 
@@ -59,6 +60,8 @@ def train(args):
 
     action = 'Squat_ziyan_1017_1'
     h5 = h5py.File(f'/home/ziyan/02_research/EventHPE/{action}.h5', 'r')
+    hmr_folder = f'/home/ziyan/02_research/EventHPE/exphmr_ziyan/{action}'
+    
     # ['events_p', 'events_t', 'events_xy', 'image_raw_event_ts']
     # f.visititems(print_dataset_size)
     image_data = np.asarray(h5['images']['binary'])
@@ -138,20 +141,42 @@ def train(args):
     
     for iSplit in range(totalSplits):
         startImg = iSplit * numImgsInSplit
-        
+
+        with open(os.path.join(hmr_folder,f'fullpic{startImg:04d}.json'), 'r') as file:
+            hmr_data = json.load(file)
+            # dict_keys(['cams', 'theta', 'keypoints3d', 'keypoints2d'])
+        _paramsHMR0 = np.array(hmr_data['theta'][0])
+        _tranHMR0 = np.array(hmr_data['cams'][0])
+        _paramsHMR0[:3] = _tranHMR0
+        _joints3DHMR0 = np.array(hmr_data['keypoints3d'][0])
+        _joints2DHMR0 = np.array(hmr_data['keypoints2d'][0])
+        with open(os.path.join(hmr_folder,f'fullpic{(startImg+numImgsInSplit):04d}.json'), 'r') as file:
+            hmr_data = json.load(file)
+        _paramsHMRN = np.array(hmr_data['theta'][0])
+        _tranHMRN = np.array(hmr_data['cams'][0])
+        _paramsHMRN[:3] = _tranHMRN
+        _joints3DHMRN = np.array(hmr_data['keypoints3d'][0])
+        _joints2DHMRN = np.array(hmr_data['keypoints2d'][0])
+        alphas = np.linspace(1 / numImgsInSplit, (numImgsInSplit-1) / numImgsInSplit, (numImgsInSplit-1))
+        _paramsF = (1 - alphas[:, np.newaxis]) * _paramsHMR0 + alphas[:, np.newaxis] * _paramsHMRN
+
+        learnable_pose_and_shape[startImg:(startImg+numImgsInSplit),:] = \
+            torch.from_numpy(np.concatenate([_paramsHMR0[np.newaxis,:], _paramsF], axis=0))
+
         # SMPL trans parameters (former 3 for global translation)
         # SMPL pose parameters (middle 72 for global rotation and joint rotations)
         # SMPL shape parameters (later 10 for shape coefficients)
-        _tran0, _pose0, _shape0 = T[startImg], poses[startImg], shape[startImg]
-        _tranN, _poseN, _shapeN = T[startImg+numImgsInSplit], poses[startImg+numImgsInSplit], shape[startImg+numImgsInSplit]
+        if (0):
+            _tran0, _pose0, _shape0 = T[startImg], poses[startImg], shape[startImg]
+            _tranN, _poseN, _shapeN = T[startImg+numImgsInSplit], poses[startImg+numImgsInSplit], shape[startImg+numImgsInSplit]
 
-        alphas = np.linspace(1 / numImgsInSplit, (numImgsInSplit-1) / numImgsInSplit, (numImgsInSplit-1))
-        _params0 = np.concatenate([_tran0, _pose0, _shape0], axis=0)
-        _paramsN = np.concatenate([_tranN, _poseN, _shapeN], axis=0)
-        _paramsF = (1 - alphas[:, np.newaxis]) * _params0 + alphas[:, np.newaxis] * _paramsN
+            alphas = np.linspace(1 / numImgsInSplit, (numImgsInSplit-1) / numImgsInSplit, (numImgsInSplit-1))
+            _params0 = np.concatenate([_tran0, _pose0, _shape0], axis=0)
+            _paramsN = np.concatenate([_tranN, _poseN, _shapeN], axis=0)
+            _paramsF = (1 - alphas[:, np.newaxis]) * _params0 + alphas[:, np.newaxis] * _paramsN
+            learnable_pose_and_shape[startImg:(startImg+numImgsInSplit),:] = \
+                torch.from_numpy(np.concatenate([_params0[np.newaxis,:], _paramsF], axis=0))
 
-        learnable_pose_and_shape[startImg:(startImg+numImgsInSplit),:] = \
-            torch.from_numpy(np.concatenate([_params0[np.newaxis,:], _paramsF], axis=0))
 
 
     learnable_pose_and_shape.requires_grad_()
@@ -176,15 +201,34 @@ def train(args):
 
 
 
-    rot_h = batch_rodrigues(torch.tensor(R[:joints3d.shape[0]], device=device).reshape(-1, 3))
-    R_extr = torch.tensor(event_extr[:3,:3], device = device)
-    T_extr = torch.tensor(event_extr[:3,-1], device = device)
-    joints3d_trans = torch.matmul(joints3d, rot_h.transpose(1,2)) + learnable_pose_and_shape[:joints3d.shape[0], :3].unsqueeze(1).repeat(1, joints3d.shape[1], 1)
-    joints3d_trans = torch.matmul(joints3d_trans, R_extr.T) + T_extr 
+    # rot_h = batch_rodrigues(torch.tensor(R[:joints3d.shape[0]], device=device).reshape(-1, 3))
+    # R_extr = torch.tensor(event_extr[:3,:3], device = device)
+    # T_extr = torch.tensor(event_extr[:3,-1], device = device)
+    # joints3d_trans = torch.matmul(joints3d, rot_h.transpose(1,2)) + learnable_pose_and_shape[:joints3d.shape[0], :3].unsqueeze(1).repeat(1, joints3d.shape[1], 1)
+    # joints3d_trans = torch.matmul(joints3d_trans, R_extr.T) + T_extr 
 
+    joints3d_trans = joints3d + learnable_pose_and_shape[:joints3d.shape[0], :3].unsqueeze(1).repeat(1, joints3d.shape[1], 1)
+    joints3d_trans = joints3d 
+
+    joints3d_trans[0]
     # joints3d_trans = joints3d + learnable_pose_and_shape[:, :3].unsqueeze(1).repeat(1, joints3d.shape[1], 1)
+    tmpCamIntr = torch.tensor([500, 500, 112, 112])
+    tmpCamIntr
     joints2d = projection_torch(joints3d_trans, cam_intr, Height, Width)
+    joints2d = projection_torch(joints3d_trans, tmpCamIntr, 112, 112)
+    joints2d[0]
     init_joints2d = joints2d.clone().detach()
+    pdb.set_trace()
+    img = Image.open(io.BytesIO(image_data[startImg]))
+    img = np.array(img)
+    image_warped = cv2.warpPerspective(np.array(img),H,dsize=(480,640))
+    tmpJ = (joints2d[0].detach().cpu().numpy() * np.array([Width, Height])).astype(np.uint16)
+    image_warped[tmpJ[:,1],tmpJ[:,0]] = [0,0,255]
+    image_warped[tmpJ[:,1]+1,tmpJ[:,0]] = [0,0,255]
+    image_warped[tmpJ[:,1]-1,tmpJ[:,0]] = [0,0,255]
+    image_warped[tmpJ[:,1],tmpJ[:,0]+1] = [0,0,255]
+    image_warped[tmpJ[:,1],tmpJ[:,0]-1] = [0,0,255]
+
 
     # get joints 2d and 3d from HMR for E2d and E3d
     # get transHMR from every frame
@@ -326,10 +370,10 @@ def train(args):
 
             joints2d = projection_torch(joints3d_trans, cam_intr, Height, Width)
             verts2d = projection_torch(verts, cam_intr, Height, Width)
-            # pdb.set_trace()
+            pdb.set_trace()
             if (0):
                 for i in range(verts.shape[0]):
-
+                    i = 0
                     tmpV = np.clip((verts2d[i].detach().cpu().numpy() * np.array([Width, Height])), 0, [Width-1, Height-1]).astype(np.uint16)
                     tmpJoints2d = np.clip((joints2d[i].detach().cpu().numpy() * np.array([Width, Height])), 0, [Width-1, Height-1]).astype(np.uint16)
                     img = Image.open(io.BytesIO(image_data[startImg+i]))

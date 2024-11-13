@@ -21,7 +21,7 @@ from eventcap_util import findCloestPoint, findClosestPointTorch, \
     find_closest_events, findBoundaryPixels, joints2dOnImage, \
     joints2dandFeatOnImage, draw_feature_dots, draw_skeleton, findImgFeat, \
     evaluation, findBoundaryPixels_torch, find_closest_events_torch, \
-    vertices_to_silhouette, draw_feature_dots_lines
+    vertices_to_silhouette, draw_feature_dots_lines, find_closest_events_torch_v2
 from event_pose_estimation.geometry import projection_torch, rot6d_to_rotmat, delta_rotmat_to_rotmat
 from event_pose_estimation.loss_funcs import compute_mpjpe, compute_pa_mpjpe, compute_pa_mpjpe_eventcap
 import h5py
@@ -272,25 +272,30 @@ def train(args):
                 for iP in range(0, numImgsInSplit-1):
                     totalSplits * numImgsInSplit *7 /8
                     pCurr = torch.tensor(featsEveryFrame[startFeatFrame + iP], requires_grad=False).to(device)  # (n, 2)
-                    min_distances, closest_vert_indices = findClosestPointTorch(verts2d[iP+1]*H, pCurr)
+                    rough_constraint_for_feat = init_joints2d[startImg + iP+1] * torch.tensor([W, H]).to(device)
+                    distances = torch.norm(pCurr.unsqueeze(1) - rough_constraint_for_feat.unsqueeze(0), dim=2)  # Resulting shape (N, M)                
+                    feature_around_body_mask = torch.min(distances,dim=1)[0] < 30
 
+                    
+                    min_distances, closest_vert_indices = findClosestPointTorch(verts2d[iP+1]*H, pCurr[feature_around_body_mask])
+                    
                     # tau(i,h) filter out the non close feature
                     valid_mask = min_distances < tolerance
 
                     # the same feat in the next frame and the same closest vertics in the next frame
-                    pNext = torch.tensor(featOnEveryBackward[startFeatFrame + iP], requires_grad=False).to(device)[valid_mask]  # (n, 2)
+                    pNext = torch.tensor(featOnEveryBackward[startFeatFrame + iP], requires_grad=False).to(device)[feature_around_body_mask][valid_mask]  # (n, 2)
                     vNext = verts2d[iP+2,closest_vert_indices][valid_mask]*H
                     nextDistances = pNext - vNext
 
                     # the same feat in the last frame and the same closest vertics in the last frame
-                    pLast = torch.tensor(featOnEveryForward[startFeatFrame + iP], requires_grad=False).to(device)[valid_mask]  # (n, 2)
+                    pLast = torch.tensor(featOnEveryForward[startFeatFrame + iP], requires_grad=False).to(device)[feature_around_body_mask][valid_mask]  # (n, 2)
                     vLast = verts2d[iP,closest_vert_indices][valid_mask]*H
                     lastDistances = pLast - vLast
 
                     if args.drawImage and (iEpoch % drawImgInterval == 0):
                         # tmpP = pCurr[valid_mask].clone().detach().cpu().numpy().astype(np.uint8)
                         # tmpV = (verts2d[iP+1]*H)[closest_vert_indices][valid_mask].detach().cpu().numpy().astype(np.uint8)
-                        tmpP = pCurr[valid_mask].clone().detach().cpu().numpy()
+                        tmpP = pCurr[feature_around_body_mask][valid_mask].clone().detach().cpu().numpy()
                         tmpV = (verts2d[iP+1]*H)[closest_vert_indices][valid_mask].detach().cpu().numpy()
                         frame_gray = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+iP+1), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
                         # colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(len(tmpP))}
@@ -308,6 +313,8 @@ def train(args):
                         frame_grayNext = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+iP+2), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
                         # colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(len(tmpNextP))}
                         img = draw_feature_dots_lines(frame_grayNext, tmpNextP, tmpNextV, np.arange(len(tmpNextP)), H, W)
+                        tmpVAll = np.clip((verts2d[iP+2]*H).detach().cpu().numpy(), 0, H).astype(np.uint8)
+                        img[tmpVAll[:,1], tmpVAll[:,0]] = [0,0,255]
                         imgCorFor1Frame[ iP*H: (iP+1)*H, W*2:W*3, :] = img
                         # cv2.imwrite("tmp.jpg", img)
 
@@ -318,6 +325,8 @@ def train(args):
                         frame_grayLast = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+iP), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
                         # colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(len(tmpLastP))}
                         img = draw_feature_dots_lines(frame_grayLast, tmpLastP, tmpLastV, np.arange(len(tmpLastP)), H, W)
+                        tmpVAll = np.clip((verts2d[iP]*H).detach().cpu().numpy(), 0, H).astype(np.uint8)
+                        img[tmpVAll[:,1], tmpVAll[:,0]] = [0,0,255]
                         imgCorFor1Frame[ iP*H: (iP+1)*H, :W, :] = img
                         
                         # cv2.imwrite("tmp.jpg", imgCorFor1Frame)
@@ -329,16 +338,100 @@ def train(args):
 
                 # print('===== Etemp =====')
                 loss_temp = torch.tensor(0.0, requires_grad=True)
-                if (0):
+                if (1):
+                    toleranceTemp = 10
+                    imgTempToShow = np.zeros((H, W*(numImgsInSplit+1), 3))
                     for iImg in range(0, numImgsInSplit):
-                        p0 = featsEveryFrame[startImg+iImg]
-                        p0tensor = torch.tensor(p0, requires_grad=False).to(device)  # (n, 2)
-                        min_distances, closest_joints_indices = findClosestPointTorch(joints2d[iImg]*H, p0tensor)
-                        selectedJoints = closest_joints_indices[min_distances < tolerance]
-                        if iImg > 0:
-                            loss_temp = loss_temp + torch.norm((joints2d[iImg, selectedJoints,:] - joints2d[iImg-1,selectedJoints, :]), dim=1).sum()
+                        if iImg == 0:
+                            p0 = torch.tensor(featOnEveryForward[startFeatFrame], requires_grad=False).to(device)  # (n, 2)
+                        elif iImg == numImgsInSplit:
+                            p0 = torch.tensor(featOnEveryBackward[startFeatFrame+numImgsInSplit-2], requires_grad=False).to(device)  # (n, 2)
+                        else:
+                            p0 = torch.tensor(featsEveryFrame[startFeatFrame+iImg-1], requires_grad=False).to(device)  # (n, 2)
 
-                loss_temp = loss_temp + torch.norm((joints2d[1:] - joints2d[:-1]), dim=1).sum()
+                        startEventIdx = max(img2events[startImg+iImg]-1000, 0)
+                        endEventIdx = min(img2events[startImg+iImg]+1000, len(events_xy))
+                        events_xys =  events_xy[startEventIdx:endEventIdx].astype(np.int16)
+                        events_xys = torch.from_numpy(events_xys).to(device)
+
+                        joints2dPix = joints2d[iImg] * torch.tensor([W, H], device=device)
+                        # calculate distance to each feature points
+                        distances = torch.norm(joints2dPix.unsqueeze(1) - events_xys.unsqueeze(0), dim=2)  # Resulting shape (N, M)
+                        selectedJoints = torch.any(torch.topk(distances, dim=1, k = 15, largest=False)[0] > toleranceTemp, dim=1)
+                        loss_temp = loss_temp + torch.norm((joints3d[iImg][selectedJoints] - joints3d[iImg+1][selectedJoints]), dim=1).sum()
+
+                        if args.drawImage and (iEpoch % drawImgInterval == 0):
+                            img = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+iImg), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
+                            img = np.array(img)
+                            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                            
+                            tmpJ = joints2dPix[selectedJoints].detach().cpu().numpy().astype(np.uint16)
+                            tmpJAll = joints2dPix.detach().cpu().numpy().astype(np.uint16)
+                            tmpE = events_xys.detach().cpu().numpy()
+                            img[tmpE[:,1], tmpE[:,0]] = [0,255,0]
+                            
+                            for iJ in range(len(tmpJAll)):
+                                cv2.circle(img, (tmpJAll[iJ,0], tmpJAll[iJ,1]), 3, [255,0,0], -1)
+                            for iJ in range(len(tmpJ)):
+                                font = cv2.FONT_HERSHEY_SIMPLEX
+                                font_scale = 0.3  # Size of the text
+                                selectedID = np.array([range(len(joints3d[iImg]))]).T[selectedJoints.detach().cpu().numpy() == True]
+                                selectedID[0]
+                                cv2.putText(img, str(selectedID[iJ].item()), (tmpJ[iJ,0]+3, tmpJ[iJ,1]+3), font, font_scale, [0,0,255], 1)
+                                cv2.circle(img, (tmpJ[iJ,0], tmpJ[iJ,1]), 3, [0,0,255], -1)
+                            imgTempToShow[:, iImg*W: (iImg+1)*W, :] = img
+                            # cv2.imwrite("tmp.jpg", img)
+                            # pdb.set_trace()
+
+
+                        if (0):
+                            
+                            for tmpImg in range(8):
+                                startEventIdx = max(img2events[startImg+tmpImg]-1000, 0)
+                                endEventIdx = min(img2events[startImg+tmpImg]+1000, len(events_xy))
+                                events_xys =  np.clip(events_xy[startEventIdx:endEventIdx], 0, H-1).astype(np.int16)
+                                events_xys = torch.from_numpy(events_xys).to(device)
+
+                                img = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+tmpImg), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
+                                img = np.array(img)
+                                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+                                tmpJ = joints2dPix.detach().cpu().numpy().astype(np.uint16)
+                                selectedJ = tmpJ[selectedJoints.detach().cpu().numpy()]
+                                tmpE = np.clip(events_xys.detach().cpu().numpy().astype(np.uint16), 0, [W-2, H-2])
+                                img[tmpE[:,1], tmpE[:,0]] = [255,0,255]
+                                img[tmpE[:,1]+1, tmpE[:,0]] = [255,0,255]
+                                img[tmpE[:,1]-1, tmpE[:,0]] = [255,0,255]
+                                img[tmpE[:,1], tmpE[:,0]+1] = [255,0,255]
+                                img[tmpE[:,1], tmpE[:,0]-1] = [255,0,255]
+
+                                startEventIdx = max(img2events[startImg+tmpImg+1]-1000, 0)
+                                endEventIdx = min(img2events[startImg+tmpImg+1]+1000, len(events_xy))
+                                events_ts[endEventIdx]
+                                events_xys =  np.clip(events_xy[startEventIdx:endEventIdx], 0, H-1).astype(np.int16)
+                                events_xys = torch.from_numpy(events_xys).to(device)
+                                tmpE = np.clip(events_xys.detach().cpu().numpy().astype(np.uint16), 0, [W-2, H-2])
+                                img[tmpE[:,1], tmpE[:,0]] = [255,0,0]
+                                img[tmpE[:,1]+1, tmpE[:,0]] = [255,0,0]
+                                img[tmpE[:,1]-1, tmpE[:,0]] = [255,0,0]
+                                img[tmpE[:,1], tmpE[:,0]+1] = [255,0,0]
+                                img[tmpE[:,1], tmpE[:,0]-1] = [255,0,0]
+
+                                img[tmpJ[:,1], tmpJ[:,0]] = [0,0,255]
+                                img[tmpJ[:,1]+1, tmpJ[:,0]] = [0,0,255]
+                                img[tmpJ[:,1]-1, tmpJ[:,0]] = [0,0,255]
+                                img[tmpJ[:,1], tmpJ[:,0]+1] = [0,0,255]
+                                img[tmpJ[:,1], tmpJ[:,0]-1] = [0,0,255]
+                                img[selectedJ[:,1], selectedJ[:,0]] = [0,255,255]
+                                img[selectedJ[:,1]+1, selectedJ[:,0]] = [0,255,255]
+                                img[selectedJ[:,1]-1, selectedJ[:,0]] = [0,255,255]
+                                img[selectedJ[:,1], selectedJ[:,0]+1] = [0,255,255]
+                                img[selectedJ[:,1], selectedJ[:,0]-1] = [0,255,255]
+
+                                cv2.imwrite("tmp.jpg", img)
+                                time.sleep(2)
+                        # pdb.set_trace()
+                            
+                # loss_temp = loss_temp + torch.norm((joints2d[1:] - joints2d[:-1]), dim=1).sum()
 
                 lossFor1Seq = args.cor_loss*loss_cor + args.temp_loss*loss_temp + args.joints2d_loss*loss_2D + args.joints3d_loss*loss_3D
                 # lossFor1Seq = args.cor_loss*loss_cor + args.joints2d_loss*loss_2D + args.joints3d_loss*loss_3D
@@ -374,10 +467,11 @@ def train(args):
                     # writer.add_scalar('training_loss', lossFor1Seq.item(), iEpoch*sequence_length + startImg)
 
                     # writer.add_images('feat and closest vertics' , featAndVertOnImg, iEpoch + iSplit*args.batch_optimization_epochs, dataformats='HWC')
-                    writer.add_images('feat and cloest vertices connection' , imgCorFor1Frame, iEpoch + iSplit*args.batch_optimization_epochs, dataformats='HWC')
+                    writer.add_images('feat and cloest vertices connection' , imgCorFor1Frame/255, iEpoch + iSplit*args.batch_optimization_epochs, dataformats='HWC')
                     writer.add_images('skeleton' , skeletonOnImg, iEpoch + iSplit*args.batch_optimization_epochs, dataformats='HWC')
                     writer.add_images('skeleton in the whole seq' , image, iEpoch + iSplit*args.batch_optimization_epochs, dataformats='HWC')
                     plt.close()
+                    writer.add_images('feat and joints temp loss' , imgTempToShow/255, iEpoch + iSplit*args.batch_optimization_epochs, dataformats='HWC')
                     writer.add_scalar('training_loss', lossFor1Seq.item(), iEpoch + iSplit*args.batch_optimization_epochs)
                     writer.add_scalar('loss2D', loss_2D.item(), iEpoch + iSplit*args.batch_optimization_epochs)
                     writer.add_scalar('loss3D', loss_3D.item(), iEpoch + iSplit*args.batch_optimization_epochs)
@@ -398,10 +492,17 @@ def train(args):
         # learnable_pose_and_shape = torch.load('learnable_parameters-V2.pt')
         # learnable_pose_and_shape.requires_grad_()
         # learnable_params = [learnable_pose_and_shape]
-
+        # Define a hook to freeze a part of the gradient
+        def freeze_gradient(grad):
+            grad[:, 3:] = 0  # Example: Freeze the first 650 rows
+            return grad
+        learnable_pose_and_shape.register_hook(freeze_gradient)
+        learnable_params = [learnable_pose_and_shape]
         optimizer = torch.optim.SGD(learnable_params, lr=args.lr_event, momentum=0)
         for iSplit in range(int(args.startWindow),int(args.endWindow)):
             for iEpoch in range(args.event_refinement_epochs):
+                print(f"{iEpoch} event_refinement for {iSplit} ")
+            
                 if (iEpoch % 25 == 24):
                     print(f"{iEpoch} event_refinement for {iSplit} ")
                 # print('===== Esil =====')
@@ -421,13 +522,16 @@ def train(args):
                 for iImg in range(numImgsInSplit):
                     verts2dOnSil = vertices_to_silhouette(verts2d[iImg]*H, H, W, device)
 
-                    closest_events_u_torch, closest_events_t_torch = find_closest_events_torch(verts2dOnSil,\
+                    if torch.isnan(verts2dOnSil).any() or torch.isinf(verts2dOnSil).any():
+                        print("Invalid values found in tmp_boundary_pixels")
+                        pdb.set_trace()
+
+                    closest_events_u_torch, closest_events_t_torch = find_closest_events_torch_v2(verts2dOnSil,\
                                             events_xy, events_ts, image_raw_event_ts[startImg+iImg], image_raw_event_ts[startImg], \
-                                            image_raw_event_ts[startImg+numImgsInSplit], 0.5, H, W, device)
+                                            image_raw_event_ts[startImg+numImgsInSplit], 4, H, W, device)
                     distanceToClosestEvents = torch.norm((verts2dOnSil - closest_events_u_torch)/H, dim = 1)
                     
-                    loss_sil = loss_sil + torch.mean((distanceToClosestEvents)) # try sum ( ^2)
-                
+                    loss_sil = loss_sil + torch.sum((distanceToClosestEvents)) # try sum ( ^2)
                 # print('===== Estab =====')
                 loss_stab = torch.sum(torch.norm(joints2d - init_joints2d[startImg:(startImg+numImgsInSplit)], dim=2)**2)
                 joints2d.shape
@@ -448,13 +552,18 @@ def train(args):
                 if args.drawImage and (iEpoch % int(drawImgInterval/10) == 1):
                     if os.path.exists('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit-1)):
                         frame_gray = cv2.imread('%s/full_pic_256/%s/fullpic%04i.jpg' % (args.data_dir, action, startImg+numImgsInSplit-1), cv2.IMREAD_GRAYSCALE).astype(np.uint8)
+                    img = cv2.cvtColor(frame_gray, cv2.COLOR_GRAY2BGR)
                     colors = {feature_id: (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)) for feature_id in range(closest_events_u_torch.shape[0])}
-                    boundaryAndEventOnImg = draw_feature_dots(frame_gray, verts2dOnSil, closest_events_u_torch, [x for x in range(closest_events_u_torch.shape[0])], colors)
+                    startEventIdx = max(img2events[startImg+iImg]-1000, 0)
+                    endEventIdx = min(img2events[startImg+iImg]+1000, len(events_xy))
+                    events_xys =  events_xy[startEventIdx:endEventIdx].astype(np.int16)
+                    img[events_xys[:,1], events_xys[:,0]] = [0,255,0]
+
+                    boundaryAndEventOnImg = draw_feature_dots(img, verts2dOnSil, closest_events_u_torch, [x for x in range(closest_events_u_torch.shape[0])], colors)
                     # verts : black; events: colorful
                     jointsForVisual = joints2d[-1].detach().cpu().numpy() * 256
                     jointsForVisual = jointsForVisual.astype(np.uint8)
                     
-                    skeletonOnImg = draw_skeleton(boundaryAndEventOnImg, jointsForVisual, draw_edges=True)
 
                     writer.add_images('boundary_on_Img' , boundaryAndEventOnImg, iEpoch + iSplit*args.event_refinement_epochs, dataformats='HWC')
         print(time.time())
@@ -485,16 +594,16 @@ def get_args():
     parser.add_argument('--skip', type=int, default=2)
     parser.add_argument('--img_size', type=int, default=256)
     parser.add_argument('--batch_optimization_epochs', type=int, default=10000)
-    parser.add_argument('--event_refinement_epochs', type=int, default=20)
+    parser.add_argument('--event_refinement_epochs', type=int, default=100)
     parser.add_argument('--joints3d_loss', type=float, default=25) #1
     parser.add_argument('--joints2d_loss', type=float, default=25) #200
-    parser.add_argument('--temp_loss', type=float, default=0.1) #80
-    parser.add_argument('--cor_loss', type=float, default=0.1) #50
-    parser.add_argument('--stab_loss', type=float, default=50) #5
-    parser.add_argument('--sil_loss', type=float, default=25)
+    parser.add_argument('--temp_loss', type=float, default=0) #80
+    parser.add_argument('--cor_loss', type=float, default=0.06) #50
+    parser.add_argument('--stab_loss', type=float, default=1) #5
+    parser.add_argument('--sil_loss', type=float, default=2)
 
-    parser.add_argument('--startWindow', type=float, default=0) #5
-    parser.add_argument('--endWindow', type=float, default=100)
+    parser.add_argument('--startWindow', type=float, default=6) #5
+    parser.add_argument('--endWindow', type=float, default=7)
 
     
     parser.add_argument('--lr_start', '-lr', type=float, default=0.001)

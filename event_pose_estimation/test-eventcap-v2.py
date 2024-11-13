@@ -88,7 +88,7 @@ def test(args):
     model = model.to(device=device)  # move the model parameters to CPU/GPU
 
 
-    learnable_pose_and_shape = torch.load('learnable_parameters-V2.pt')
+    learnable_pose_and_shape = torch.load('learnable_parameters-hpegood.pt')
     mpjpe_result, pampjpe_result, joints3DGTForEveryFrame, joints3DPredForEveryFrame = \
         evaluation(args, action, learnable_pose_and_shape, model, cam_intr, device)
     # _, _, _, jointsRealPredForEveryFrame = \

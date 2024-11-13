@@ -25,6 +25,7 @@ def vertices_to_silhouette(vertices, H=256, W=256, device='cpu'):
     Returns:
     - silhouette (torch.Tensor): Tensor of shape (1, 1, H, W) representing the silhouette.
     """
+    # vertices[:,0], vertices[:,1] = vertices[:,0].clamp(0,W), vertices[:,0].clamp(0,H)
     vertPixels = vertices.to(torch.int64)  # Convert to int64 for indexing compatibility in PyTorch
     
     # Define structuring elements (kernels) for dilation
@@ -85,9 +86,16 @@ def vertices_to_silhouette(vertices, H=256, W=256, device='cpu'):
     below_edge_mask = edge[below_neighbor[:,1].to(torch.long), below_neighbor[:,0].to(torch.long)] != 0
     
     valid_edge_mask = right_edge_mask | left_edge_mask | above_edge_mask | below_edge_mask    
-    vertices = vertices[valid_edge_mask]
+    # if torch.any(valid_edge_mask) == False:
+    #     pdb.set_trace()
+    #     valid_edge_mask.shape
+    #     torch.count_nonzero(valid_edge_mask[:100])
+    #     torch.count_nonzero((right_edge_mask | left_edge_mask| above_edge_mask | below_edge_mask) == True)
+    #     valid_edge_mask[3]
+    #     return vertices
 
     if (0):
+        vertices[valid_edge_mask].shape
         tmpV = vertices[valid_edge_mask].clone().detach().cpu().numpy().astype(np.uint8)
         tmpV = vertices.clone().detach().cpu().numpy().astype(np.uint8)
         npmask = np.zeros((256,256))
@@ -96,10 +104,10 @@ def vertices_to_silhouette(vertices, H=256, W=256, device='cpu'):
         # tmp2 = vertices[valid_edge_mask].detach().cpu().numpy().astype(np.uint8)
         tmp2 = vertices[valid_edge_mask].detach().cpu().numpy().astype(np.uint8)
         edgetmp1[tmpV[:,1], tmpV[:,0]] = [255]
-        cv2.imwrite("random_tmp.jpg", edgetmp1)
+        cv2.imwrite("tmp.jpg", edgetmp1)
 
 
-    return vertices
+    return vertices[valid_edge_mask]
 
 
 # Function to create the silhouette from vertices
@@ -152,7 +160,6 @@ def vertices_to_silhouette_Extreme(vertices, H=256, W=256, device='cpu'):
     right_neighbor = vertices.clone()
     right_neighbor[:,0] = torch.clamp(x_coords + 3, 0, W - 1)
     right_edge_mask = edge[right_neighbor[:,1].to(torch.long), right_neighbor[:,0].to(torch.long)] != 0
-    torch.any(right_edge_mask)
 
     ## left neighbor
     left_neighbor = vertices.clone()
@@ -170,6 +177,8 @@ def vertices_to_silhouette_Extreme(vertices, H=256, W=256, device='cpu'):
     below_edge_mask = edge[below_neighbor[:,1].to(torch.long), below_neighbor[:,0].to(torch.long)] != 0
     
     valid_edge_mask = right_edge_mask | left_edge_mask | above_edge_mask | below_edge_mask    
+    if not torch.any(valid_edge_mask):
+        return  vertices
     vertices = vertices[valid_edge_mask]
 
     if (0):
@@ -353,11 +362,18 @@ def find_closest_events_torch_v2(boundary_pixels, event_u, event_t, t_f, t_0, t_
     boundary_pixels_norm = (tmp_boundary_pixels ** 2).sum(dim=1, keepdim=True)  # Shape (m, 1)
     events_xy_norm = (tmp_events_xy ** 2).sum(dim=1, keepdim=True).T            # Shape (1, n)
 
+    if torch.isnan(tmp_boundary_pixels).any() or torch.isinf(tmp_boundary_pixels).any():
+        print("Invalid values found in tmp_boundary_pixels")
+        pdb.set_trace()
+    if torch.isnan(tmp_events_xy).any() or torch.isinf(tmp_events_xy).any():
+        print("Invalid values found in tmp_events_xy")
+        pdb.set_trace()
+
     # Calculate boundary pixels' neighborhood bounds
-    x_min = tmp_boundary_pixels[:, 0:1] - half_neighborhood / W  # Shape: (m, 1)
-    x_max = tmp_boundary_pixels[:, 0:1] + half_neighborhood / W  # Shape: (m, 1)
-    y_min = tmp_boundary_pixels[:, 1:2] - half_neighborhood / H  # Shape: (m, 1)
-    y_max = tmp_boundary_pixels[:, 1:2] + half_neighborhood / H  # Shape: (m, 1)
+    x_min = (tmp_boundary_pixels[:, 0:1] - half_neighborhood / W).clamp(0,1)  # Shape: (m, 1)
+    x_max = (tmp_boundary_pixels[:, 0:1] + half_neighborhood / W).clamp(0,1)  # Shape: (m, 1)
+    y_min = (tmp_boundary_pixels[:, 1:2] - half_neighborhood / H).clamp(0,1)  # Shape: (m, 1)
+    y_max = (tmp_boundary_pixels[:, 1:2] + half_neighborhood / H).clamp(0,1)  # Shape: (m, 1)
 
     # Generate masks for each event to check if within 8x8 neighborhood of each boundary pixel
     within_neighborhood_mask = (
@@ -368,6 +384,7 @@ def find_closest_events_torch_v2(boundary_pixels, event_u, event_t, t_f, t_0, t_
     # Calculate spatial distances using masking for neighborhood
     # (x-y)^2 = x^2 + y^2 -2xy
     # add a small regularization term
+    
     spatial_distances = (
         boundary_pixels_norm + events_xy_norm -
         2 * torch.mm(tmp_boundary_pixels, tmp_events_xy.T) + 0.0001

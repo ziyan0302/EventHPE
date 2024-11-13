@@ -4,18 +4,18 @@ import glob
 import pdb
 
 # Parameters for the video
-output_video = 'tracking_result.mp4'  # Output video file name
+output_video = 'training_result.mp4'  # Output video file name
 fps = 5  # Frames per second
-frame_size = (480, 640)  # Width, height of the images (must match your image size)
+frame_size = (256*3, 256)  # Width, height of the images (must match your image size)
 
 # Create a VideoWriter object (you can change the codec to suit your platform)
 # fourcc = cv2.VideoWriter_fourcc(*'XVID')  # Codec (XVID for .avi or MP4V for .mp4)
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Codec (XVID for .avi or MP4V for .mp4)
 video_writer = cv2.VideoWriter(output_video, fourcc, fps, frame_size)
 
-images_folder = '/home/ziyan/02_research/EventHPE/tracking_result'
+images_folder = '/home/ziyan/02_research/EventHPE/comparisons'
 image_files = sorted(glob.glob(os.path.join(str(images_folder), "*.jpg")))
-pdb.set_trace()
+# pdb.set_trace()
 
 # Assuming `images` is a list of file paths or images
 for i in range(len(image_files)):  # Loop over the images
