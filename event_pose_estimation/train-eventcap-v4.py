@@ -669,8 +669,8 @@ def train(args):
                     
 
                     writer.add_images('boundary_on_Img' , boundaryAndEventOnImg, iEpoch + iSplit*args.event_refinement_epochs, dataformats='HWC')
+            torch.save(learnable_pose_and_shape, 'learnable_parameters-V2.pt')
         print(time.time())
-        torch.save(learnable_pose_and_shape, 'learnable_parameters-V2.pt')
         break
 
 

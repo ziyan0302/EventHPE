@@ -80,6 +80,8 @@ def test(args):
             _paramsF = (1 - alphas[:, np.newaxis]) * _params0 + alphas[:, np.newaxis] * _paramsN
             # _paramsF = (_paramsF+_params0)/2
             learnable_pose_and_shape[startImg:(startImg+numImgsInSplit),:] = torch.from_numpy(np.concatenate([_params0[np.newaxis,:], _paramsF], axis=0))
+            pdb.set_trace()
+
 
     # learnable_pose_and_shape.shape
 
